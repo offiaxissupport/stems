@@ -266,8 +266,18 @@ class STEMSEnvironment:
 
         # Cache dimensions
         self._num_buildings: int = len(self._env.observation_space)
-        self._obs_dim: int = self._env.observation_space[0].shape[0]
         self._action_dim: int = self._env.action_space[0].shape[0]
+        self._obs_dim: int = OBS_DIM  # always expose the 28-dim subset downstream
+
+        if self._mock:
+            self._obs_indices: Optional[List[Optional[int]]] = None
+        else:
+            # Build mapping from OBS_NAMES → index in CityLearn's raw observation
+            # vector (which may have more than 28 dimensions, e.g. 52).
+            # Use a dict for O(1) lookups instead of repeated linear searches.
+            raw_obs_names: List[str] = self._env.observation_names[0]
+            name_to_idx = {name: i for i, name in enumerate(raw_obs_names)}
+            self._obs_indices = [name_to_idx.get(name) for name in OBS_NAMES]
 
     # ------------------------------------------------------------------
     # Properties
@@ -309,17 +319,14 @@ class STEMSEnvironment:
             obs_list, info = result, {}
 
         obs_list = [np.asarray(o, dtype=np.float32) for o in obs_list]
+        obs_list = self._extract_obs(obs_list)
         return obs_list, info
 
     def step(
         self, actions: np.ndarray
     ) -> Tuple[List[np.ndarray], List[float], bool, bool, Dict]:
         """Step the environment with a (num_buildings, action_dim) action array."""
-        if self._mock:
-            action_list = [actions[i] for i in range(self._num_buildings)]
-        else:
-            # CityLearn expects a list of arrays or a 2D array
-            action_list = [actions[i] for i in range(self._num_buildings)]
+        action_list = self._remap_actions(actions)
 
         result = self._env.step(action_list)
         if len(result) == 5:
@@ -329,6 +336,7 @@ class STEMSEnvironment:
             terminated, truncated = done, False
 
         obs_list = [np.asarray(o, dtype=np.float32) for o in obs_list]
+        obs_list = self._extract_obs(obs_list)
         rewards = [float(r) for r in rewards]
 
         # Apply communication dropout: zero out selected buildings' observations
@@ -338,6 +346,52 @@ class STEMSEnvironment:
                     obs_list[i] = np.zeros_like(obs_list[i])
 
         return obs_list, rewards, bool(terminated), bool(truncated), info
+
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
+
+    def _extract_obs(self, raw_obs_list: List[np.ndarray]) -> List[np.ndarray]:
+        """Extract the 28-dim OBS_NAMES subset from raw CityLearn observations.
+
+        When using the mock environment the observations are already 28-dim, so
+        they are returned unchanged.  For the real CityLearn environment the raw
+        vector may contain more observations (e.g. 52); we select only the ones
+        listed in OBS_NAMES, in order, filling missing entries with 0.
+        """
+        if self._mock:
+            return raw_obs_list
+        extracted: List[np.ndarray] = []
+        for raw_obs in raw_obs_list:
+            obs = np.zeros(OBS_DIM, dtype=np.float32)
+            for j, idx in enumerate(self._obs_indices):  # type: ignore[union-attr]
+                if idx is not None and idx < len(raw_obs):
+                    obs[j] = raw_obs[idx]
+            extracted.append(obs)
+        return extracted
+
+    def _remap_actions(self, actions: np.ndarray) -> List[np.ndarray]:
+        """Build per-building action list, remapping cooling_device for CityLearn.
+
+        For the real CityLearn environment the ``cooling_device`` action (index 2)
+        must be in [0, 1] (0 = no cooling, 1 = full cooling), but the agent
+        produces values in [-1, 1].  We apply the affine map
+        ``(a + 1) / 2`` to bring it into the required range.
+
+        The mock environment already accepts [-1, 1] for all dimensions, so no
+        remapping is performed there.
+        """
+        if self._mock:
+            return [actions[i] for i in range(self._num_buildings)]
+        action_list: List[np.ndarray] = []
+        for i in range(self._num_buildings):
+            a = actions[i]
+            # cooling_device is action index 2; remap [-1, 1] -> [0, 1]
+            if len(a) > 2:
+                a = a.copy()
+                a[2] = (a[2] + 1.0) / 2.0
+            action_list.append(a)
+        return action_list
 
     # ------------------------------------------------------------------
     # Building metadata (positions + features for graph construction)
