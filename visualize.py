@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Generate all visualisations from the STEMS paper.
+Generate all visualizations from the STEMS paper.
 
 Usage:
     python visualize.py [--checkpoint checkpoints/] [--output-dir plots/]
@@ -49,7 +49,7 @@ import torch
 # ---------------------------------------------------------------------------
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Generate STEMS paper visualisations")
+    p = argparse.ArgumentParser(description="Generate STEMS paper visualizations")
     p.add_argument("--checkpoint", type=str, default="checkpoints/")
     p.add_argument("--output-dir", type=str, default="plots/")
     p.add_argument("--seed", type=int, default=42)
