@@ -54,6 +54,9 @@ class CBFShield:
         Number of buildings B.
     """
 
+    # SOC change per unit action per timestep (approximate physics model)
+    SOC_DELTA_RATE: float = 0.1
+
     def __init__(
         self,
         config: Optional[CBFConfig] = None,
@@ -101,7 +104,7 @@ class CBFShield:
 
         for i in range(B):
             soc = float(states[i][_IDX_SOC_ELEC])
-            delta_soc = float(actions[i, 1]) * 0.1   # rough SOC change per step
+            delta_soc = float(actions[i, 1]) * self.SOC_DELTA_RATE   # rough SOC change per step
             net_i = float(states[i][_IDX_NET])
 
             h_lo, h_hi = self._h_soc(soc, delta_soc)
@@ -156,14 +159,14 @@ class CBFShield:
             constraints = []
 
             # SOC lower bound (Eq 16)
-            delta_soc = u[1] * 0.1
-            h_lo_nom, h_hi_nom = self._h_soc(soc, float(a_nom[1]) * 0.1)
+            delta_soc = u[1] * self.SOC_DELTA_RATE
+            h_lo_nom, h_hi_nom = self._h_soc(soc, float(a_nom[1]) * self.SOC_DELTA_RATE)
             constraints.append(soc + delta_soc - self.cfg.SOC_min >= -self.cfg.gamma_cbf * h_lo_nom)
             # SOC upper bound
             constraints.append(self.cfg.SOC_max - (soc + delta_soc) >= -self.cfg.gamma_cbf * h_hi_nom)
 
-            # Per-building power (Eq 17) – approximate via action magnitude
-            constraints.append(cp.norm(u, 1) <= 3.0)
+            # Per-building power (Eq 17) – approximate: |action| ≤ action_dim
+            constraints.append(cp.norm(u, 1) <= float(action_dim))
 
             # Action range
             constraints.append(u >= -1.0)
@@ -191,10 +194,9 @@ class CBFShield:
         for i in range(B):
             soc = float(states[i][_IDX_SOC_ELEC])
             # Clip electrical storage action to keep SOC in [SOC_min, SOC_max]
-            # delta_soc ≈ action[1] * 0.1
             a1 = float(actions[i, 1])
-            max_charge = (self.cfg.SOC_max - soc) / 0.1
-            max_discharge = (soc - self.cfg.SOC_min) / 0.1
+            max_charge    = (self.cfg.SOC_max - soc) / self.SOC_DELTA_RATE
+            max_discharge = (soc - self.cfg.SOC_min) / self.SOC_DELTA_RATE
             a1 = float(np.clip(a1, -max_discharge, max_charge))
             safe_actions[i, 1] = float(np.clip(a1, -1.0, 1.0))
 

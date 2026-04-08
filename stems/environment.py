@@ -346,16 +346,18 @@ class STEMSEnvironment:
     def get_building_info(self) -> Dict[str, Any]:
         """Return dict with 'positions' and 'features' for BuildingGraph."""
         B = self._num_buildings
+        rng = np.random.default_rng(self._seed)
 
-        # Positions: unit-grid layout for mock; real env could use lat/lon
-        positions = np.array(
-            [[float(i), float(i % 2)] for i in range(B)], dtype=np.float32
+        # Positions: evenly spread around a unit circle for better graph diversity
+        angles = np.linspace(0.0, 2.0 * np.pi, B, endpoint=False)
+        positions = np.stack(
+            [np.cos(angles), np.sin(angles)], axis=1
+        ).astype(np.float32)  # (B, 2)
+
+        # Functional features: seeded random, reproducible across resets
+        features = (
+            np.eye(B, dtype=np.float32)
+            + 0.1 * rng.standard_normal((B, B)).astype(np.float32)
         )
-
-        # Functional features: rough load/solar profile summary
-        # In the mock we use fixed synthetic features; in real env these would
-        # come from building metadata.
-        features = np.eye(B, dtype=np.float32) + 0.1 * np.random.randn(B, B).astype(np.float32)
-        features = features[:, :B]   # (B, B) – each building's B-dim feature
 
         return {"positions": positions, "features": features}

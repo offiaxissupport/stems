@@ -113,9 +113,11 @@ class STEMSReward:
             r_comfort = -self.cfg.lambda_indoor * (t_in - self.cfg.T_ref) ** 2
 
             # Eq 9: Renewable utilisation reward
+            # When net < 0 (exporting), full renewable credit; use max(0, e_i) for
+            # the denominator to avoid inflation of the ratio on negative net.
             denom = solar_i + max(0.0, e_i)
-            if denom > 1e-8:
-                renewable_ratio = min(solar_i / denom, 1.0)
+            if solar_i > 1e-8:
+                renewable_ratio = min(solar_i / max(denom, solar_i), 1.0)
             else:
                 renewable_ratio = 0.0
             r_renew = self.cfg.xi * renewable_ratio

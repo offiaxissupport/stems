@@ -266,7 +266,10 @@ class STEMSAgent:
 
         T_win = self.cfg.transformer.window_size
 
-        adj_id   = torch.eye(B, device=self.device)
+        # Use the actual building adjacency during training to learn spatial coordination.
+        # Each batch_forward call creates a fresh computation graph, so separate
+        # critic and actor backward passes do not interfere.
+        adj_id   = self.adj
         obs_nb   = obs_tensor.view(N, B, self.obs_dim)
         next_nb  = next_obs_tensor.view(N, B, self.obs_dim)
         hist_nb      = obs_nb.unsqueeze(2).expand(N, B, T_win, self.obs_dim).contiguous()
