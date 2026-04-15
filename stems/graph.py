@@ -83,11 +83,8 @@ class BuildingGraph:
         # Zero out self-loops; they are re-added via the identity in GCN
         np.fill_diagonal(w, 0.0)
 
-        # Row-normalise so edge weights sum to 1 per building
-        row_sum = w.sum(axis=1, keepdims=True) + 1e-8
-        w_norm = w / row_sum
-
-        self._adj = torch.tensor(w_norm, dtype=torch.float32)
+        # Return raw edge weights; symmetric normalisation is handled by the GCN
+        self._adj = torch.tensor(w, dtype=torch.float32)
         return self._adj
 
     # ------------------------------------------------------------------

@@ -36,6 +36,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--save-dir", type=str, default="checkpoints/", help="Checkpoint directory")
     p.add_argument("--seed", type=int, default=42, help="Random seed")
     p.add_argument("--no-cbf", action="store_true", help="Disable CBF safety shield")
+    p.add_argument("--schema", type=str, default=None, help="CityLearn schema name or path (default: Phase 2 local eval)")
     return p.parse_args()
 
 
@@ -81,8 +82,8 @@ def train(args: argparse.Namespace) -> None:
     config.training.episodes = args.episodes
 
     print(f"[STEMS] Initialising environment ...")
-    env = STEMSEnvironment(seed=args.seed)
-    eval_env = STEMSEnvironment(seed=args.seed + 1000)
+    env = STEMSEnvironment(schema=args.schema, seed=args.seed)
+    eval_env = STEMSEnvironment(schema=args.schema, seed=args.seed + 1000)
 
     if env.using_mock:
         print("[STEMS] Using mock environment (CityLearn not installed)")
@@ -137,6 +138,11 @@ def train(args: argparse.Namespace) -> None:
         "duration_s": [],
     }
 
+    # Best checkpoint tracking
+    best_cost = float("inf")
+    best_ep = 0
+    best_dir = os.path.join(args.save_dir, "best")
+
     print(f"\n[STEMS] Starting training for {config.training.episodes} episodes ...")
     print("-" * 65)
 
@@ -169,13 +175,20 @@ def train(args: argparse.Namespace) -> None:
             violations = agent.cbf.check_violations(actions, obs_list)
             ep_violations += int(violations.sum())
 
-            # Store transition
+            # Build next_history for storage (after updating with next_obs)
+            history_buf.update(next_obs_list)
+            next_obs_window = history_buf.get()
+
+            # Store transition with history windows
             replay_buffer.add(
                 obs=obs_list,
                 actions=actions,
                 rewards=stems_rewards,
                 next_obs=next_obs_list,
                 done=done,
+                history=obs_window,
+                next_history=next_obs_window,
+                raw_actions=agent._last_raw_actions,
             )
 
             ep_reward += float(np.mean(stems_rewards))
@@ -190,7 +203,6 @@ def train(args: argparse.Namespace) -> None:
                 n_updates += 1
 
             obs_list = next_obs_list
-            history_buf.update(obs_list)
 
         # Evaluate agent (no noise, no exploration)
         eval_cost = evaluate_episode(agent, eval_env, config)
@@ -211,19 +223,31 @@ def train(args: argparse.Namespace) -> None:
         history["critic_loss"].append(round(ep_critic_loss, 4))
         history["duration_s"].append(round(duration, 1))
 
+        # Save best checkpoint
+        if eval_cost < best_cost:
+            best_cost = eval_cost
+            best_ep = ep
+            os.makedirs(best_dir, exist_ok=True)
+            agent.save(best_dir)
+
+        star = " *" if eval_cost <= best_cost else ""
         print(
             f"[STEMS] Ep{ep:3d}: reward={ep_reward:8.2f}  "
             f"viol={viol_rate:.3f}  eval_cost={eval_cost:.1f}  "
-            f"({duration:.1f}s)"
+            f"({duration:.1f}s){star}"
         )
 
     print("-" * 65)
     print("[STEMS] Training complete.")
 
-    # Save checkpoint
+    # Save final checkpoint
     os.makedirs(args.save_dir, exist_ok=True)
     agent.save(args.save_dir)
-    print(f"[STEMS] Checkpoint saved to {args.save_dir}")
+    print(f"[STEMS] Final checkpoint saved to {args.save_dir}")
+
+    # If we tracked a best checkpoint, report it
+    if best_cost < float("inf"):
+        print(f"[STEMS] Best checkpoint (ep {best_ep}, eval_cost={best_cost:.1f}) saved to {best_dir}")
 
     # Save training history
     history_path = os.path.join(args.save_dir, "training_history.json")

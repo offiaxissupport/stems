@@ -33,9 +33,12 @@ class ReplayBuffer:
         self.capacity = capacity
         self._obs: deque = deque(maxlen=capacity)
         self._actions: deque = deque(maxlen=capacity)
+        self._raw_actions: deque = deque(maxlen=capacity)
         self._rewards: deque = deque(maxlen=capacity)
         self._next_obs: deque = deque(maxlen=capacity)
         self._dones: deque = deque(maxlen=capacity)
+        self._history: deque = deque(maxlen=capacity)
+        self._next_history: deque = deque(maxlen=capacity)
 
     # ------------------------------------------------------------------
     def add(
@@ -45,25 +48,37 @@ class ReplayBuffer:
         rewards: List[float],
         next_obs: List[np.ndarray],
         done: bool,
+        history: Optional[np.ndarray] = None,
+        next_history: Optional[np.ndarray] = None,
+        raw_actions: Optional[np.ndarray] = None,
     ) -> None:
         """Push one transition into the buffer."""
         self._obs.append(obs)
         self._actions.append(actions)
+        self._raw_actions.append(raw_actions)
         self._rewards.append(rewards)
         self._next_obs.append(next_obs)
         self._dones.append(done)
+        self._history.append(history)
+        self._next_history.append(next_history)
 
     # ------------------------------------------------------------------
     def sample(self, batch_size: int) -> Dict[str, Any]:
         """Return a random mini-batch as a dict of lists / arrays."""
         indices = random.sample(range(len(self)), min(batch_size, len(self)))
-        return {
+        batch: Dict[str, Any] = {
             "obs": [self._obs[i] for i in indices],
             "actions": np.array([self._actions[i] for i in indices]),
             "rewards": np.array([self._rewards[i] for i in indices]),
             "next_obs": [self._next_obs[i] for i in indices],
             "dones": np.array([self._dones[i] for i in indices], dtype=np.float32),
         }
+        if self._raw_actions[indices[0]] is not None:
+            batch["raw_actions"] = np.array([self._raw_actions[i] for i in indices])
+        if self._history[indices[0]] is not None:
+            batch["history"] = np.array([self._history[i] for i in indices])
+            batch["next_history"] = np.array([self._next_history[i] for i in indices])
+        return batch
 
     # ------------------------------------------------------------------
     def __len__(self) -> int:

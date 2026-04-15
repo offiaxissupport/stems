@@ -76,8 +76,8 @@ class STEMSReward:
         if prev_net_consumption is None:
             prev_net_consumption = [0.0] * self.B
 
-        # Total grid draw at current step (sum across buildings)
-        total_net = sum(float(o[_IDX_NET]) for o in next_obs_list)
+        # Grid draw: sum of positive net consumption per building (Eq 6)
+        grid_draw = sum(max(0.0, float(o[_IDX_NET])) for o in next_obs_list)
 
         rewards: List[float] = []
         for i in range(self.B):
@@ -94,11 +94,10 @@ class STEMSReward:
             r_econ = -self.cfg.mu * v_t * e_i
 
             # Eq 6-7: Stability reward
-            # Grid term: penalise collective over-load
-            grid_excess = max(0.0, total_net)
+            # Grid term: penalise collective over-load (Eq 6)
             grid_term = self.cfg.alpha_grid * (
-                1.0 - (grid_excess / self.P_grid_max) ** 2
-            )
+                1.0 - grid_draw / self.P_grid_max
+            ) ** 2
             # Building load smoothness
             build_term = self.cfg.alpha_build * (
                 1.0 - abs(e_i) / max(self.P_building_max, 1.0)
@@ -109,8 +108,11 @@ class STEMSReward:
             )
             r_stab = grid_term + build_term + ramp_term
 
-            # Eq 8: Comfort reward
-            r_comfort = -self.cfg.lambda_indoor * (t_in - self.cfg.T_ref) ** 2
+            # Eq 8: Comfort reward – use per-building setpoint when available
+            t_set = float(next_i[_IDX_T_SET]) if len(next_i) > _IDX_T_SET else self.cfg.T_ref
+            if t_set == 0.0:
+                t_set = self.cfg.T_ref
+            r_comfort = -self.cfg.lambda_indoor * (t_in - t_set) ** 2
 
             # Eq 9: Renewable utilisation reward
             # When net < 0 (exporting), full renewable credit; use max(0, e_i) for

@@ -34,6 +34,7 @@ def parse_args() -> argparse.Namespace:
                    help="Path to STEMS checkpoint directory")
     p.add_argument("--episodes", type=int, default=1, help="Evaluation episodes per agent")
     p.add_argument("--seed", type=int, default=0, help="Random seed")
+    p.add_argument("--schema", type=str, default=None, help="CityLearn schema name or path")
     return p.parse_args()
 
 
@@ -128,6 +129,12 @@ def quick_train(
     """Short training run so baselines have learned something."""
     buffer = ReplayBuffer(capacity=50_000)
     history_buf = HistoryBuffer(env.num_buildings, env.obs_dim, config.transformer.window_size)
+    reward_fn = STEMSReward(
+        config=config.reward,
+        num_buildings=env.num_buildings,
+        P_grid_max=config.cbf.P_grid_max,
+        P_building_max=config.cbf.P_building_max,
+    )
 
     for _ in range(episodes):
         obs_list, _ = env.reset()
@@ -135,11 +142,13 @@ def quick_train(
         history_buf.update(obs_list)
         done = False
         step = 0
+        prev_net = [float(o[20]) for o in obs_list]
         while not done:
             actions = agent.select_action(obs_list, history_buf.get(), explore=True)
             next_obs, _, terminated, truncated, _ = env.step(actions)
             done = terminated or truncated
-            rewards = [-float(o[20] * o[21]) for o in next_obs]
+            rewards = reward_fn.compute(obs_list, actions, next_obs, prev_net)
+            prev_net = [float(o[20]) for o in next_obs]
             buffer.add(obs_list, actions, rewards, next_obs, done)
             if step % 20 == 0 and len(buffer) >= 256:
                 batch = buffer.sample(256)
@@ -214,7 +223,7 @@ def evaluate(args: argparse.Namespace) -> None:
     set_seed(args.seed)
     config = STEMSConfig()
 
-    env = STEMSEnvironment(seed=args.seed)
+    env = STEMSEnvironment(schema=args.schema, seed=args.seed)
     B = env.num_buildings
 
     print(f"[eval] Environment: {'mock' if env.using_mock else 'CityLearn'}, "
@@ -228,9 +237,9 @@ def evaluate(args: argparse.Namespace) -> None:
 
     # Quick baseline training (few episodes so results are non-trivial)
     print("[eval] Training SAC baseline ...")
-    quick_train(sac_agent, STEMSEnvironment(seed=args.seed + 1), config, episodes=2)
+    quick_train(sac_agent, STEMSEnvironment(schema=args.schema, seed=args.seed + 1), config, episodes=3)
     print("[eval] Training PPO baseline ...")
-    quick_train(ppo_agent, STEMSEnvironment(seed=args.seed + 2), config, episodes=2)
+    quick_train(ppo_agent, STEMSEnvironment(schema=args.schema, seed=args.seed + 2), config, episodes=3)
 
     agents = {
         "STEMS": stems_agent,
@@ -269,17 +278,18 @@ def evaluate(args: argparse.Namespace) -> None:
     # ---- extreme weather ----
     print("\n[eval] Running extreme weather evaluation ...")
 
-    def run_extreme(hot: bool) -> Dict[str, Dict[str, float]]:
+    def run_extreme(temp_offset: float) -> Dict[str, Dict[str, float]]:
         """Run evaluation with forced outdoor temperature offsets."""
         results: Dict[str, Dict[str, float]] = {}
         for name, agent in agents.items():
-            xenv = STEMSEnvironment(seed=args.seed + (100 if hot else 200))
+            xenv = STEMSEnvironment(schema=args.schema, seed=args.seed)
+            xenv.set_temp_offset(temp_offset)
             calc = run_episode(agent, xenv, config, explore=False)
             results[name] = calc.compute_all()
         return results
 
-    heatwave_raw = run_extreme(hot=True)
-    coldwave_raw = run_extreme(hot=False)
+    heatwave_raw = run_extreme(temp_offset=10.0)
+    coldwave_raw = run_extreme(temp_offset=-10.0)
 
     print_table2(normal_raw, heatwave_raw, coldwave_raw)
 

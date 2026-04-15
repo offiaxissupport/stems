@@ -243,23 +243,37 @@ class STEMSEnvironment:
 
     SCHEMA = "citylearn_challenge_2023_phase_2_local_evaluation"
 
+    # Fallback local schema paths (CityLearn source checkout)
+    _LOCAL_DATA_PATHS = [
+        r"C:\temp\citylearn_src\data\datasets",
+    ]
+
     def __init__(self, schema: Optional[str] = None, seed: int = 0) -> None:
         self._seed = seed
         self._schema = schema or self.SCHEMA
         self._comm_dropout: float = 0.0
+        self._temp_offset: float = 0.0   # outdoor temperature offset for extreme weather
 
         if _CITYLEARN_AVAILABLE:
             try:
-                self._env = CityLearnEnv(schema=self._schema)
+                self._env = CityLearnEnv(schema=self._schema, central_agent=False)
                 self._mock = False
-            except Exception as exc:
-                warnings.warn(
-                    f"CityLearn schema load failed ({exc}); using mock environment.",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
-                self._env = _MockCityLearnEnv(seed=seed)
+            except Exception as exc1:
+                # Try local schema path fallback
+                self._env = None
                 self._mock = True
+                import os
+                for base in self._LOCAL_DATA_PATHS:
+                    local = os.path.join(base, self._schema, "schema.json")
+                    if os.path.isfile(local):
+                        try:
+                            self._env = CityLearnEnv(schema=local, central_agent=False)
+                            self._mock = False
+                            break
+                        except Exception:
+                            pass
+                if self._mock:
+                    self._env = _MockCityLearnEnv(seed=seed)
         else:
             self._env = _MockCityLearnEnv(seed=seed)
             self._mock = True
@@ -307,6 +321,10 @@ class STEMSEnvironment:
         """Set probability that a building's observation is zeroed (comm dropout)."""
         self._comm_dropout = float(np.clip(dropout_prob, 0.0, 1.0))
 
+    def set_temp_offset(self, offset: float) -> None:
+        """Set outdoor temperature offset in °C (positive=heatwave, negative=coldwave)."""
+        self._temp_offset = float(offset)
+
     # ------------------------------------------------------------------
     # Core API
     # ------------------------------------------------------------------
@@ -326,6 +344,7 @@ class STEMSEnvironment:
         self, actions: np.ndarray
     ) -> Tuple[List[np.ndarray], List[float], bool, bool, Dict]:
         """Step the environment with a (num_buildings, action_dim) action array."""
+        actions = np.clip(actions, -1.0, 1.0)
         action_list = self._remap_actions(actions)
 
         result = self._env.step(action_list)
@@ -358,17 +377,28 @@ class STEMSEnvironment:
         they are returned unchanged.  For the real CityLearn environment the raw
         vector may contain more observations (e.g. 52); we select only the ones
         listed in OBS_NAMES, in order, filling missing entries with 0.
+
+        If a temperature offset is set, outdoor temperature observations
+        (indices 2-5) are perturbed to simulate extreme weather.
         """
         if self._mock:
-            return raw_obs_list
-        extracted: List[np.ndarray] = []
-        for raw_obs in raw_obs_list:
-            obs = np.zeros(OBS_DIM, dtype=np.float32)
-            for j, idx in enumerate(self._obs_indices):  # type: ignore[union-attr]
-                if idx is not None and idx < len(raw_obs):
-                    obs[j] = raw_obs[idx]
-            extracted.append(obs)
-        return extracted
+            result = raw_obs_list
+        else:
+            result = []
+            for raw_obs in raw_obs_list:
+                obs = np.zeros(OBS_DIM, dtype=np.float32)
+                for j, idx in enumerate(self._obs_indices):  # type: ignore[union-attr]
+                    if idx is not None and idx < len(raw_obs):
+                        obs[j] = raw_obs[idx]
+                result.append(obs)
+
+        # Apply temperature offset for extreme weather simulation
+        if self._temp_offset != 0.0:
+            for obs in result:
+                for idx in (2, 3, 4, 5):  # outdoor temp + 3 predictions
+                    obs[idx] += self._temp_offset
+
+        return result
 
     def _remap_actions(self, actions: np.ndarray) -> List[np.ndarray]:
         """Build per-building action list, remapping cooling_device for CityLearn.
@@ -385,11 +415,10 @@ class STEMSEnvironment:
             return [actions[i] for i in range(self._num_buildings)]
         action_list: List[np.ndarray] = []
         for i in range(self._num_buildings):
-            a = actions[i]
+            a = actions[i].copy()
             # cooling_device is action index 2; remap [-1, 1] -> [0, 1]
             if len(a) > 2:
-                a = a.copy()
-                a[2] = (a[2] + 1.0) / 2.0
+                a[2] = np.clip((a[2] + 1.0) / 2.0, 0.0, 1.0)
             action_list.append(a)
         return action_list
 

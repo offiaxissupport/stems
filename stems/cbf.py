@@ -61,9 +61,11 @@ class CBFShield:
         self,
         config: Optional[CBFConfig] = None,
         num_buildings: int = 3,
+        action_scale: float = 1.0,
     ) -> None:
         self.cfg = config or CBFConfig()
         self.B = num_buildings
+        self.action_scale = action_scale
 
     # ------------------------------------------------------------------
     # Constraint functions
@@ -143,40 +145,52 @@ class CBFShield:
             return self._clip_project(actions, states)
 
     # ------------------------------------------------------------------
+    # Approximate power contribution per unit action (dhw, battery, cooling)
+    POWER_FACTORS: list = [0.05, 0.1, 0.5]
+
     def _qp_project(self, actions: np.ndarray, states: List[np.ndarray]) -> np.ndarray:
-        """QP-based projection using cvxpy with the SCS solver."""
+        """QP-based projection using cvxpy with the SCS solver (Eq 19-20)."""
         B, action_dim = actions.shape
         safe_actions = actions.copy()
+        total_net = sum(float(s[_IDX_NET]) for s in states)
 
         for i in range(B):
             a_nom = actions[i]            # (action_dim,)
             soc = float(states[i][_IDX_SOC_ELEC])
             net_i = float(states[i][_IDX_NET])
-            total_net = sum(float(s[_IDX_NET]) for s in states)
 
             u = cp.Variable(action_dim)
             cost = cp.sum_squares(u - a_nom)
             constraints = []
 
-            # SOC lower bound (Eq 16)
+            # SOC constraints (Eq 16): h_battery >= 0
             delta_soc = u[1] * self.SOC_DELTA_RATE
-            h_lo_nom, h_hi_nom = self._h_soc(soc, float(a_nom[1]) * self.SOC_DELTA_RATE)
-            constraints.append(soc + delta_soc - self.cfg.SOC_min >= -self.cfg.gamma_cbf * h_lo_nom)
-            # SOC upper bound
-            constraints.append(self.cfg.SOC_max - (soc + delta_soc) >= -self.cfg.gamma_cbf * h_hi_nom)
+            constraints.append(soc + delta_soc >= self.cfg.SOC_min)
+            constraints.append(soc + delta_soc <= self.cfg.SOC_max)
 
-            # Per-building power (Eq 17) – approximate: |action| ≤ action_dim
-            constraints.append(cp.norm(u, 1) <= float(action_dim))
+            # Building power constraint (Eq 17): P_building_max - |e_pred| >= 0
+            pf = self.POWER_FACTORS
+            predicted_delta = sum(
+                pf[d] * (u[d] - float(a_nom[d]))
+                for d in range(min(action_dim, len(pf)))
+            )
+            predicted_net = net_i + predicted_delta
+            constraints.append(predicted_net <= self.cfg.P_building_max)
+            constraints.append(predicted_net >= -self.cfg.P_building_max)
+
+            # Grid power constraint (Eq 18): P_grid_max - total >= 0
+            predicted_total = total_net + predicted_delta
+            constraints.append(predicted_total <= self.cfg.P_grid_max)
 
             # Action range
-            constraints.append(u >= -1.0)
-            constraints.append(u <= 1.0)
+            constraints.append(u >= -self.action_scale)
+            constraints.append(u <= self.action_scale)
 
             prob = cp.Problem(cp.Minimize(cost), constraints)
             try:
                 prob.solve(solver=cp.SCS, verbose=False)
                 if prob.status in (cp.OPTIMAL, cp.OPTIMAL_INACCURATE) and u.value is not None:
-                    safe_actions[i] = np.clip(u.value, -1.0, 1.0)
+                    safe_actions[i] = np.clip(u.value, -self.action_scale, self.action_scale)
                 else:
                     # Infeasible: emergency conservative action
                     safe_actions[i] = np.zeros(action_dim)
@@ -198,6 +212,6 @@ class CBFShield:
             max_charge    = (self.cfg.SOC_max - soc) / self.SOC_DELTA_RATE
             max_discharge = (soc - self.cfg.SOC_min) / self.SOC_DELTA_RATE
             a1 = float(np.clip(a1, -max_discharge, max_charge))
-            safe_actions[i, 1] = float(np.clip(a1, -1.0, 1.0))
+            safe_actions[i, 1] = float(np.clip(a1, -self.action_scale, self.action_scale))
 
         return safe_actions

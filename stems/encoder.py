@@ -111,8 +111,7 @@ class SpatialGCN(nn.Module):
         h = x
         for i, conv in enumerate(self.convs):
             h = conv(h, adj)
-            if i < self.num_layers - 1:
-                h = F.relu(h)
+            h = F.relu(h)           # Eq 12: σ applied at every layer
         return h   # (B, hidden_dim)
 
 
