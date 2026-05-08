@@ -23,7 +23,7 @@ from stems.graph import BuildingGraph
 from stems.agent import STEMSAgent
 from stems.reward import STEMSReward
 from stems.metrics import MetricsCalculator
-from stems.utils import ReplayBuffer, HistoryBuffer, set_seed
+from stems.utils import EpisodeBuffer, HistoryBuffer, set_seed
 
 
 # ---------------------------------------------------------------------------
@@ -112,8 +112,8 @@ def train(args: argparse.Namespace) -> None:
         use_cbf=not args.no_cbf,
     )
 
-    # Replay and history buffers
-    replay_buffer = ReplayBuffer(capacity=config.training.buffer_capacity)
+    # Episode buffer (on-policy) and history buffer
+    episode_buffer = EpisodeBuffer()
     history_buf = HistoryBuffer(
         num_buildings=B,
         obs_dim=env.obs_dim,
@@ -135,6 +135,10 @@ def train(args: argparse.Namespace) -> None:
         "safety_violations": [],
         "actor_loss": [],
         "critic_loss": [],
+        "cost_critic_loss": [],
+        "lambda_soc": [],
+        "lambda_power": [],
+        "lambda_grid": [],
         "duration_s": [],
     }
 
@@ -155,12 +159,11 @@ def train(args: argparse.Namespace) -> None:
         ep_reward = 0.0
         ep_violations = 0
         ep_steps = 0
-        ep_actor_loss = 0.0
-        ep_critic_loss = 0.0
-        n_updates = 0
         prev_net = [float(o[20]) for o in obs_list]
         done = False
 
+        # --- Phase 1: Collect full episode trajectory (Algorithm 2, lines 5-10) ---
+        episode_buffer.reset()
         while not done:
             obs_window = history_buf.get()
             actions = agent.select_action(obs_list, obs_window, explore=True)
@@ -171,16 +174,35 @@ def train(args: argparse.Namespace) -> None:
             stems_rewards = reward_fn.compute(obs_list, actions, next_obs_list, prev_net)
             prev_net = [float(o[20]) for o in next_obs_list]
 
+            if ep_steps > 0 and ep_steps % 500 == 0:
+                print(f"  [Ep{ep}] step={ep_steps}  reward={ep_reward:.1f}  "
+                      f"viol_so_far={ep_violations}", flush=True)
+
             # Count safety violations
             violations = agent.cbf.check_violations(actions, obs_list)
             ep_violations += int(violations.sum())
+
+            # Constraint cost signals (B, 3): binary violation per constraint per building.
+            # k=0: SOC bounds (h1), k=1: per-building power (h2), k=2: grid power (h3)
+            _IDX_SOC = 19
+            _IDX_NET = 20
+            soc_next = np.array([o[_IDX_SOC] for o in next_obs_list], dtype=np.float32)
+            net_next = np.array([o[_IDX_NET] for o in next_obs_list], dtype=np.float32)
+            c_soc = (
+                (soc_next < config.cbf.SOC_min) | (soc_next > config.cbf.SOC_max)
+            ).astype(np.float32)                                             # (B,)
+            c_power = (np.abs(net_next) > config.cbf.P_building_max).astype(np.float32)  # (B,)
+            c_grid = np.full(
+                B, float(net_next.sum() > config.cbf.P_grid_max), dtype=np.float32
+            )                                                                 # (B,)
+            constraint_costs = np.stack([c_soc, c_power, c_grid], axis=-1)  # (B, 3)
 
             # Build next_history for storage (after updating with next_obs)
             history_buf.update(next_obs_list)
             next_obs_window = history_buf.get()
 
-            # Store transition with history windows
-            replay_buffer.add(
+            # Store transition in episode buffer
+            episode_buffer.add(
                 obs=obs_list,
                 actions=actions,
                 rewards=stems_rewards,
@@ -189,30 +211,27 @@ def train(args: argparse.Namespace) -> None:
                 history=obs_window,
                 next_history=next_obs_window,
                 raw_actions=agent._last_raw_actions,
+                safe_actions=agent._last_safe_actions,   # post-CBF, used for Eq 24
+                constraint_costs=constraint_costs,        # (B, 3) Lagrangian cost signals
             )
 
             ep_reward += float(np.mean(stems_rewards))
             ep_steps += 1
-
-            # Policy update every 10 steps (Algorithm 2, line 12)
-            if ep_steps % 10 == 0 and len(replay_buffer) >= config.training.batch_size:
-                batch = replay_buffer.sample(config.training.batch_size)
-                losses = agent.update(batch)
-                ep_actor_loss += losses.get("actor_loss", 0.0)
-                ep_critic_loss += losses.get("critic_loss", 0.0)
-                n_updates += 1
-
             obs_list = next_obs_list
+
+        # --- Phase 2: Single on-policy update on full trajectory (Algorithm 2, lines 11-13) ---
+        batch = episode_buffer.get_batch()
+        losses = agent.update(batch)
+        ep_actor_loss = losses.get("actor_loss", 0.0)
+        ep_critic_loss = losses.get("critic_loss", 0.0)
+        ep_cost_critic_loss = losses.get("cost_critic_loss", 0.0)
+        ep_lambdas = losses.get("lambdas", [0.0, 0.0, 0.0])
 
         # Evaluate agent (no noise, no exploration)
         eval_cost = evaluate_episode(agent, eval_env, config)
 
         duration = time.time() - t0
         viol_rate = ep_violations / max(ep_steps * B, 1)
-
-        if n_updates > 0:
-            ep_actor_loss /= n_updates
-            ep_critic_loss /= n_updates
 
         # Log
         history["episode"].append(ep)
@@ -221,6 +240,10 @@ def train(args: argparse.Namespace) -> None:
         history["safety_violations"].append(round(viol_rate, 4))
         history["actor_loss"].append(round(ep_actor_loss, 4))
         history["critic_loss"].append(round(ep_critic_loss, 4))
+        history["cost_critic_loss"].append(round(ep_cost_critic_loss, 4))
+        history["lambda_soc"].append(round(float(ep_lambdas[0]), 5))
+        history["lambda_power"].append(round(float(ep_lambdas[1]), 5))
+        history["lambda_grid"].append(round(float(ep_lambdas[2]), 5))
         history["duration_s"].append(round(duration, 1))
 
         # Save best checkpoint

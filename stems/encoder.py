@@ -187,7 +187,11 @@ class TemporalTransformer(nn.Module):
         attn_out, _ = self.attn(x, x, x)                       # (B, T, embed_dim)
         z = self.norm(x + attn_out)                             # residual + LN
 
-        return z[:, -1, :]   # take the last-step representation  (B, embed_dim)
+        # Eq 14: z_i^t = Σ α_{i,t,τ} v_{i,τ}
+        # The current timestep is the last in the window (index -1).
+        # Taking z[:, -1, :] gives the attended representation for position t,
+        # which is a weighted sum of all past value vectors – exactly Eq 14.
+        return z[:, -1, :]  # (B, embed_dim)
 
 
 # --------------------------------------------------------------------------

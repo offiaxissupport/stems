@@ -1,19 +1,34 @@
 """
-CBF Safety Shield (Eq 16-20, Algorithm 1).
+CBF Safety Shield (Eq 16-20, Algorithm 1) and Neural Safety Filter.
 
-Three safety constraints are enforced:
-    h1(s)   Battery SOC bounds          (Eq 16)
-    h2(s,a) Per-building power limit    (Eq 17)
-    h3(s,a) Total grid power limit      (Eq 18)
+Two complementary safety mechanisms:
 
-The shield solves a Quadratic Programme (QP) to find the minimal correction
-to the nominal action that makes all constraints satisfied (Eq 19-20).
+CBFShield (original STEMS)
+--------------------------
+Solves a QP to find the minimal action correction satisfying hard constraints.
+Used as a verified fallback and for offline data collection.
 
-    min_u  ||u - a||²
-    s.t.   h_k(s, u) >= -gamma_cbf * h_k(s, a_nominal)  for all k
+NeuralSafetyFilter (novel contribution)
+----------------------------------------
+A learned, differentiable safety correction network trained on (state, action)
+pairs collected from the CBF QP oracle.  It maps unsafe nominal actions to safe
+ones end-to-end, so safety gradients flow directly into policy learning.
 
-If cvxpy is unavailable the shield falls back to analytical clipping.
-If the QP is infeasible an emergency conservative action is returned.
+Architecture:
+    Input : [obs_i (D), a_nom_i (A)]  ← per-building concatenation
+    Trunk : 3 × Linear-LayerNorm-ReLU (hidden_dim=128)
+    Head  : Linear → Tanh → safe_action (A)  ← same range as actor
+
+Uncertainty estimation:
+    MC-Dropout ensemble of E=5 forward passes during inference.
+    If ensemble std exceeds `uncertainty_threshold`, fall back to CBFShield QP.
+
+Training:
+    Offline, on a dataset of (obs, a_nom, a_safe) tuples where a_safe comes
+    from the CBF QP oracle.  Loss = MSE(predicted_safe, a_safe_qp) +
+    α · constraint_penalty(predicted_safe, obs).
+    The constraint penalty is the sum of ReLU(−h_k) over all violated CBF
+    constraints, making the loss differentiable w.r.t. the network weights.
 """
 
 from __future__ import annotations
@@ -21,6 +36,8 @@ from __future__ import annotations
 from typing import List, Optional, Tuple
 
 import numpy as np
+import torch
+import torch.nn as nn
 
 from stems.config import CBFConfig
 
@@ -54,8 +71,14 @@ class CBFShield:
         Number of buildings B.
     """
 
-    # SOC change per unit action per timestep (approximate physics model)
-    SOC_DELTA_RATE: float = 0.1
+    # SOC change per unit action per timestep.
+    # Empirically calibrated on CityLearn 2023 Phase-2: observed delta/action
+    # ratios range from 0.0 (building with no battery) to ~0.80 (small-capacity
+    # buildings).  Using 0.8 as a conservative upper bound ensures the QP
+    # constraints are tight enough to actually prevent overcharge/undercharge.
+    # Previously this was 0.1 (factor-of-8 underestimate), which let the CBF
+    # approve actions that caused SOC to jump from 0.2 → 0.93 in one step.
+    SOC_DELTA_RATE: float = 0.8
 
     def __init__(
         self,
@@ -84,9 +107,13 @@ class CBFShield:
         """Eq 17: Per-building power safety margin."""
         return self.cfg.P_building_max - abs(net)
 
-    def _h_grid(self, total_net: float) -> float:
-        """Eq 18: Total grid power safety margin."""
-        return self.cfg.P_grid_max - total_net
+    def _h_grid(self, total_positive_net: float) -> float:
+        """Eq 18: Total grid power safety margin.
+
+        Paper Eq 18: h_grid = P_grid_max - Σ_i max(0, e_i) ≥ 0
+        Only grid *imports* (positive net) count against the grid limit.
+        """
+        return self.cfg.P_grid_max - total_positive_net
 
     # ------------------------------------------------------------------
     # Constraint violation check
@@ -101,8 +128,9 @@ class CBFShield:
         B = self.B
         violations = np.zeros(B, dtype=bool)
 
-        total_net = sum(float(s[_IDX_NET]) for s in states)
-        grid_ok = self._h_grid(total_net) >= 0.0
+        # Eq 18: grid constraint uses Σ max(0, e_i) — only imports count
+        total_positive_net = sum(max(0.0, float(s[_IDX_NET])) for s in states)
+        grid_ok = self._h_grid(total_positive_net) >= 0.0
 
         for i in range(B):
             soc = float(states[i][_IDX_SOC_ELEC])
@@ -139,10 +167,35 @@ class CBFShield:
         -------
         safe_actions : np.ndarray, shape (B, action_dim)
         """
+        # Algorithm 1, lines 4-6: check if all constraints already satisfied.
+        # If so, return the nominal action directly (no QP needed).
+        if self._all_constraints_satisfied(actions, states):
+            return actions.copy()
+
         if _CVXPY_AVAILABLE:
             return self._qp_project(actions, states)
         else:
             return self._clip_project(actions, states)
+
+    # ------------------------------------------------------------------
+    def _all_constraints_satisfied(
+        self,
+        actions: np.ndarray,
+        states: List[np.ndarray],
+    ) -> bool:
+        """Return True iff all CBF constraints are satisfied (Algorithm 1, line 4)."""
+        total_positive_net = sum(max(0.0, float(s[_IDX_NET])) for s in states)
+        if self._h_grid(total_positive_net) < 0.0:
+            return False
+        for i in range(self.B):
+            soc = float(states[i][_IDX_SOC_ELEC])
+            delta_soc = float(actions[i, 1]) * self.SOC_DELTA_RATE
+            h_lo, h_hi = self._h_soc(soc, delta_soc)
+            if h_lo < 0.0 or h_hi < 0.0:
+                return False
+            if self._h_build(float(states[i][_IDX_NET])) < 0.0:
+                return False
+        return True
 
     # ------------------------------------------------------------------
     # Approximate power contribution per unit action (dhw, battery, cooling)
@@ -152,7 +205,8 @@ class CBFShield:
         """QP-based projection using cvxpy with the SCS solver (Eq 19-20)."""
         B, action_dim = actions.shape
         safe_actions = actions.copy()
-        total_net = sum(float(s[_IDX_NET]) for s in states)
+        # Eq 18: only positive (import) contributions count against P_grid_max
+        total_positive_net = sum(max(0.0, float(s[_IDX_NET])) for s in states)
 
         for i in range(B):
             a_nom = actions[i]            # (action_dim,)
@@ -178,9 +232,11 @@ class CBFShield:
             constraints.append(predicted_net <= self.cfg.P_building_max)
             constraints.append(predicted_net >= -self.cfg.P_building_max)
 
-            # Grid power constraint (Eq 18): P_grid_max - total >= 0
-            predicted_total = total_net + predicted_delta
-            constraints.append(predicted_total <= self.cfg.P_grid_max)
+            # Grid power constraint (Eq 18): P_grid_max - Σmax(0,e) >= 0
+            # Approximate: the building's predicted import is max(0, predicted_net)
+            predicted_import = cp.maximum(predicted_net, 0)
+            other_positive = total_positive_net - max(0.0, net_i)
+            constraints.append(other_positive + predicted_import <= self.cfg.P_grid_max)
 
             # Action range
             constraints.append(u >= -self.action_scale)
@@ -215,3 +271,233 @@ class CBFShield:
             safe_actions[i, 1] = float(np.clip(a1, -self.action_scale, self.action_scale))
 
         return safe_actions
+
+
+# ---------------------------------------------------------------------------
+# NeuralSafetyFilter
+# ---------------------------------------------------------------------------
+
+class NeuralSafetyFilter(nn.Module):
+    """Differentiable learned safety filter.
+
+    Replaces the fixed CBF QP shield with a neural network trained offline on
+    (obs, a_nominal) → a_safe pairs generated by the CBF oracle.  Because it is
+    fully differentiable, safety gradients flow directly into actor learning
+    during the policy update step.
+
+    At inference time, MC-Dropout uncertainty is measured over E forward passes.
+    If uncertainty (ensemble std) exceeds `uncertainty_threshold`, the module
+    raises a flag and the caller falls back to the CBF QP.
+
+    Parameters
+    ----------
+    obs_dim : int        – per-building observation dimension
+    action_dim : int     – per-building action dimension
+    hidden_dim : int     – width of hidden layers (default 128)
+    num_ensemble : int   – MC-Dropout samples for uncertainty (default 5)
+    dropout_rate : float – Dropout probability during MC sampling (default 0.1)
+    uncertainty_threshold : float – fallback threshold on ensemble std (default 0.05)
+    cbf_config : CBFConfig – constraint bounds for the differentiable penalty
+    """
+
+    SOC_DELTA_RATE: float = 0.8    # must match CBFShield
+
+    def __init__(
+        self,
+        obs_dim: int,
+        action_dim: int,
+        hidden_dim: int = 128,
+        num_ensemble: int = 5,
+        dropout_rate: float = 0.1,
+        uncertainty_threshold: float = 0.05,
+        cbf_config: Optional[CBFConfig] = None,
+    ) -> None:
+        super().__init__()
+        self.obs_dim = obs_dim
+        self.action_dim = action_dim
+        self.E = num_ensemble
+        self.uncertainty_threshold = uncertainty_threshold
+        self.cfg = cbf_config or CBFConfig()
+
+        in_dim = obs_dim + action_dim
+
+        # Trunk: 3 × (Linear → LayerNorm → ReLU → Dropout)
+        self.trunk = nn.Sequential(
+            nn.Linear(in_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(p=dropout_rate),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(p=dropout_rate),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(p=dropout_rate),
+        )
+
+        # Head: projects to action space, Tanh to stay in [-1, 1]
+        self.head = nn.Sequential(
+            nn.Linear(hidden_dim, action_dim),
+            nn.Tanh(),
+        )
+        nn.init.uniform_(self.head[0].weight, -3e-3, 3e-3)
+        nn.init.uniform_(self.head[0].bias, -3e-3, 3e-3)
+
+        # Running flag set by forward() – True when last call fell back to QP
+        self.last_used_fallback: bool = False
+
+    # ------------------------------------------------------------------
+    def forward(self, obs: torch.Tensor, a_nom: torch.Tensor) -> torch.Tensor:
+        """Single deterministic forward pass (used during training backprop).
+
+        Parameters
+        ----------
+        obs   : (B, obs_dim)
+        a_nom : (B, action_dim)
+
+        Returns
+        -------
+        a_safe : (B, action_dim) in [-1, 1]
+        """
+        x = torch.cat([obs, a_nom], dim=-1)   # (B, obs_dim + action_dim)
+        return self.head(self.trunk(x))
+
+    # ------------------------------------------------------------------
+    def predict(
+        self,
+        obs_np: np.ndarray,
+        a_nom_np: np.ndarray,
+        device: torch.device,
+        cbf_fallback: "CBFShield",
+        states: List[np.ndarray],
+    ) -> Tuple[np.ndarray, bool]:
+        """MC-Dropout inference with uncertainty-triggered CBF fallback.
+
+        Parameters
+        ----------
+        obs_np     : (B, obs_dim) float32
+        a_nom_np   : (B, action_dim) float32
+        device     : torch device
+        cbf_fallback : CBFShield – used when uncertainty is too high
+        states     : List[np.ndarray] – raw obs list for CBF
+
+        Returns
+        -------
+        safe_actions : (B, action_dim)
+        used_fallback : bool – True if uncertainty triggered QP fallback
+        """
+        obs_t = torch.tensor(obs_np, dtype=torch.float32, device=device)
+        a_t = torch.tensor(a_nom_np, dtype=torch.float32, device=device)
+
+        # Enable Dropout for MC sampling
+        self.train()
+        with torch.no_grad():
+            samples = torch.stack(
+                [self.head(self.trunk(torch.cat([obs_t, a_t], dim=-1))) for _ in range(self.E)],
+                dim=0,
+            )  # (E, B, action_dim)
+
+        mean = samples.mean(dim=0)        # (B, action_dim)
+        std  = samples.std(dim=0)         # (B, action_dim)
+        max_uncertainty = float(std.max().item())
+
+        self.eval()
+        self.last_used_fallback = False
+
+        if max_uncertainty > self.uncertainty_threshold:
+            # Uncertainty too high – fall back to verified CBF QP
+            self.last_used_fallback = True
+            return cbf_fallback.project(a_nom_np, states), True
+
+        return mean.cpu().numpy(), False
+
+    # ------------------------------------------------------------------
+    # Differentiable constraint penalty (for offline training loss)
+    # ------------------------------------------------------------------
+
+    def constraint_penalty(
+        self,
+        obs: torch.Tensor,
+        a_safe: torch.Tensor,
+    ) -> torch.Tensor:
+        """Soft constraint violation penalty – differentiable w.r.t. a_safe.
+
+        Computes ReLU(−h_k) for each constraint k, averaged over the batch.
+        This makes the training loss aware of constraint satisfaction so the
+        network learns to be safe, not just to imitate the QP output.
+
+        Constraints (per building i):
+            h1_lo = SOC_i + a_{i,1}·δ − SOC_min  ≥ 0   (SOC lower bound)
+            h1_hi = SOC_max − SOC_i − a_{i,1}·δ  ≥ 0   (SOC upper bound)
+            h2    = P_build_max − |net_i|          ≥ 0   (building power, approx)
+
+        Grid constraint is handled approximately: Σ relu(net_i) ≤ P_grid_max.
+
+        Parameters
+        ----------
+        obs    : (B, obs_dim)
+        a_safe : (B, action_dim) – the filter's predicted safe action
+
+        Returns
+        -------
+        penalty : scalar tensor
+        """
+        soc   = obs[:, _IDX_SOC_ELEC]   # (B,)
+        net   = obs[:, _IDX_NET]         # (B,)
+        delta = a_safe[:, 1] * self.SOC_DELTA_RATE  # (B,) SOC change
+
+        # SOC bounds
+        h_soc_lo = soc + delta - self.cfg.SOC_min   # (B,)
+        h_soc_hi = self.cfg.SOC_max - soc - delta    # (B,)
+
+        # Building power (approximate: treat net as fixed, apply delta)
+        pf_battery = 0.1
+        net_pred = net + pf_battery * (a_safe[:, 1] - a_safe[:, 1].detach())
+        h_build_pos = self.cfg.P_building_max - net_pred
+        h_build_neg = net_pred + self.cfg.P_building_max
+
+        # Grid power (approximate sum)
+        grid_import = torch.relu(net).sum()
+        h_grid = torch.tensor(self.cfg.P_grid_max, device=obs.device) - grid_import
+
+        violations = torch.cat([
+            torch.relu(-h_soc_lo),
+            torch.relu(-h_soc_hi),
+            torch.relu(-h_build_pos),
+            torch.relu(-h_build_neg),
+            torch.relu(-h_grid).unsqueeze(0),
+        ])
+        return violations.mean()
+
+    # ------------------------------------------------------------------
+    # Pretraining loss (MSE imitation + constraint penalty)
+    # ------------------------------------------------------------------
+
+    def loss(
+        self,
+        obs: torch.Tensor,
+        a_nom: torch.Tensor,
+        a_safe_qp: torch.Tensor,
+        alpha: float = 0.5,
+    ) -> torch.Tensor:
+        """Offline training loss.
+
+        L = MSE(filter(obs, a_nom), a_safe_qp) + α · constraint_penalty
+
+        Parameters
+        ----------
+        obs       : (B, obs_dim)
+        a_nom     : (B, action_dim) – nominal (unsafe) action
+        a_safe_qp : (B, action_dim) – oracle safe action from CBF QP
+        alpha     : weight on the constraint penalty term
+
+        Returns
+        -------
+        scalar loss tensor
+        """
+        a_pred = self.forward(obs, a_nom)
+        mse = nn.functional.mse_loss(a_pred, a_safe_qp)
+        penalty = self.constraint_penalty(obs, a_pred)
+        return mse + alpha * penalty

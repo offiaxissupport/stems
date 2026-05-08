@@ -2,7 +2,8 @@
 Utility classes and helpers for STEMS.
 
 Provides:
-    ReplayBuffer   – circular experience replay store
+    ReplayBuffer   – circular experience replay store (for off-policy baselines)
+    EpisodeBuffer  – collects one full episode for on-policy training (Algorithm 2)
     HistoryBuffer  – rolling observation window for the Transformer
     normalize_obs  – zero-mean unit-variance observation normalisation
     set_seed       – global random seed helper
@@ -19,7 +20,85 @@ import torch
 
 
 # ---------------------------------------------------------------------------
-# ReplayBuffer
+# EpisodeBuffer (on-policy, Algorithm 2)
+# ---------------------------------------------------------------------------
+
+class EpisodeBuffer:
+    """Collects a single full episode trajectory for on-policy training.
+
+    After collecting a complete episode, call ``get_batch()`` to retrieve the
+    full trajectory as a training batch, then ``reset()`` for the next episode.
+    """
+
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        self._obs: List[List[np.ndarray]] = []
+        self._actions: List[np.ndarray] = []
+        self._raw_actions: List[np.ndarray] = []
+        self._safe_actions: List[np.ndarray] = []   # post-CBF actions in [-1,1], for Eq 24
+        self._rewards: List[List[float]] = []
+        self._next_obs: List[List[np.ndarray]] = []
+        self._dones: List[bool] = []
+        self._history: List[np.ndarray] = []
+        self._next_history: List[np.ndarray] = []
+        # Constraint cost signals (B, K) per step – k=0 SOC, k=1 building power, k=2 grid
+        self._constraint_costs: List[np.ndarray] = []
+
+    def add(
+        self,
+        obs: List[np.ndarray],
+        actions: np.ndarray,
+        rewards: List[float],
+        next_obs: List[np.ndarray],
+        done: bool,
+        history: Optional[np.ndarray] = None,
+        next_history: Optional[np.ndarray] = None,
+        raw_actions: Optional[np.ndarray] = None,
+        safe_actions: Optional[np.ndarray] = None,
+        constraint_costs: Optional[np.ndarray] = None,
+    ) -> None:
+        self._obs.append(obs)
+        self._actions.append(actions)
+        self._raw_actions.append(raw_actions if raw_actions is not None else actions)
+        self._safe_actions.append(safe_actions if safe_actions is not None else
+                                  (raw_actions if raw_actions is not None else actions))
+        self._rewards.append(rewards)
+        self._next_obs.append(next_obs)
+        self._dones.append(done)
+        if history is not None:
+            self._history.append(history)
+        if next_history is not None:
+            self._next_history.append(next_history)
+        if constraint_costs is not None:
+            self._constraint_costs.append(constraint_costs)
+
+    def __len__(self) -> int:
+        return len(self._obs)
+
+    def get_batch(self) -> Dict[str, Any]:
+        """Return the full episode as a batch dict (same format as ReplayBuffer.sample)."""
+        batch: Dict[str, Any] = {
+            "obs": self._obs,
+            "actions": np.array(self._actions),
+            "raw_actions": np.array(self._raw_actions),
+            "safe_actions": np.array(self._safe_actions),  # post-CBF, for Eq 24
+            "rewards": np.array(self._rewards),
+            "next_obs": self._next_obs,
+            "dones": np.array(self._dones, dtype=np.float32),
+        }
+        if self._history:
+            batch["history"] = np.array(self._history)
+            batch["next_history"] = np.array(self._next_history)
+        if self._constraint_costs:
+            # shape (N, B, K): timestep × building × constraint
+            batch["constraint_costs"] = np.array(self._constraint_costs)
+        return batch
+
+
+# ---------------------------------------------------------------------------
+# ReplayBuffer (off-policy, for baselines)
 # ---------------------------------------------------------------------------
 
 class ReplayBuffer:

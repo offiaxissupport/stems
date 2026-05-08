@@ -8,7 +8,17 @@ from stems.cbf import CBFShield
 from stems.reward import STEMSReward
 from stems.agent import STEMSAgent
 from stems.metrics import MetricsCalculator
-from stems.utils import ReplayBuffer, HistoryBuffer
+from stems.utils import ReplayBuffer, EpisodeBuffer, HistoryBuffer
+from stems.baselines import (
+    RuleBasedAgent,
+    SingleAgentSAC,
+    DMAPPOAgent,
+    MPCAgent,
+    MADDPGAgent,
+    MARLISAAgent,
+    MADCQAgent,
+    MetaEMSAgent,
+)
 
 __all__ = [
     "STEMSConfig",
@@ -20,5 +30,14 @@ __all__ = [
     "STEMSAgent",
     "MetricsCalculator",
     "ReplayBuffer",
+    "EpisodeBuffer",
     "HistoryBuffer",
+    "RuleBasedAgent",
+    "SingleAgentSAC",
+    "DMAPPOAgent",
+    "MPCAgent",
+    "MADDPGAgent",
+    "MARLISAAgent",
+    "MADCQAgent",
+    "MetaEMSAgent",
 ]

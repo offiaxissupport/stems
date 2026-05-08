@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import os
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -31,7 +32,7 @@ from stems.encoder import STEncoder, SpatialGCN, TemporalTransformer
 from stems.cbf import CBFShield
 from stems.metrics import MetricsCalculator
 from stems.reward import STEMSReward
-from stems.utils import ReplayBuffer, HistoryBuffer, set_seed
+from stems.utils import EpisodeBuffer, HistoryBuffer, set_seed
 
 
 # ---------------------------------------------------------------------------
@@ -40,9 +41,11 @@ from stems.utils import ReplayBuffer, HistoryBuffer, set_seed
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="STEMS ablation study (Table IV)")
-    p.add_argument("--episodes", type=int, default=5,
-                   help="Training episodes per variant (default 5 for quick study)")
+    p.add_argument("--episodes", type=int, default=15,
+                   help="Training episodes per ablated variant (default 15, same as main training)")
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--checkpoint", type=str, default="checkpoints/seed1/best/",
+                   help="Pre-trained Full STEMS checkpoint; ablated variants train from scratch")
     return p.parse_args()
 
 
@@ -163,13 +166,16 @@ def _make_base_agent(
     )
     if encoder_override is not None:
         agent.encoder = encoder_override.to(agent.device)
-        # Rebuild optimisers with new encoder
+        # Rebuild optimisers with new encoder (3 separate optimisers)
         lr = config.actor_critic.lr
+        agent.encoder_optimizer = torch.optim.Adam(
+            agent.encoder.parameters(), lr=lr
+        )
         agent.actor_optimizer = torch.optim.Adam(
-            list(agent.encoder.parameters()) + list(agent.actors.parameters()), lr=lr
+            agent.actors.parameters(), lr=lr
         )
         agent.critic_optimizer = torch.optim.Adam(
-            list(agent.encoder.parameters()) + list(agent.critics.parameters()), lr=lr
+            agent.critics.parameters(), lr=lr
         )
     return agent
 
@@ -211,6 +217,28 @@ def build_variants(
 
 
 # ---------------------------------------------------------------------------
+# Evaluation-only loop (for the pre-trained Full STEMS checkpoint)
+# ---------------------------------------------------------------------------
+
+def _eval_only(agent: STEMSAgent, env: STEMSEnvironment, config: STEMSConfig) -> Dict[str, float]:
+    """Run one evaluation episode without any training."""
+    calc = MetricsCalculator(env.num_buildings, config.cbf)
+    hist_buf = HistoryBuffer(env.num_buildings, env.obs_dim, config.transformer.window_size)
+    obs_list, _ = env.reset()
+    hist_buf.reset()
+    hist_buf.update(obs_list)
+    done = False
+    while not done:
+        actions = agent.select_action(obs_list, hist_buf.get(), explore=False)
+        next_obs, _, terminated, truncated, _ = env.step(actions)
+        done = terminated or truncated
+        calc.add_step(obs_list, actions, next_obs)
+        obs_list = next_obs
+        hist_buf.update(obs_list)
+    return calc.compute_all()
+
+
+# ---------------------------------------------------------------------------
 # Training + evaluation loop
 # ---------------------------------------------------------------------------
 
@@ -227,29 +255,35 @@ def train_and_eval(
         P_grid_max=config.cbf.P_grid_max,
         P_building_max=config.cbf.P_building_max,
     )
-    buffer = ReplayBuffer(config.training.buffer_capacity)
+    episode_buffer = EpisodeBuffer()
     hist_buf = HistoryBuffer(env.num_buildings, env.obs_dim, config.transformer.window_size)
 
-    # Training
+    # Training (on-policy, Algorithm 2)
     for _ in range(n_episodes):
         obs_list, _ = env.reset()
         hist_buf.reset()
         hist_buf.update(obs_list)
+        episode_buffer.reset()
         done = False
         prev_net = [float(o[20]) for o in obs_list]
-        step = 0
         while not done:
-            actions = agent.select_action(obs_list, hist_buf.get(), explore=True)
+            obs_window = hist_buf.get()
+            actions = agent.select_action(obs_list, obs_window, explore=True)
             next_obs, _, terminated, truncated, _ = env.step(actions)
             done = terminated or truncated
             stems_rewards = reward_fn.compute(obs_list, actions, next_obs, prev_net)
             prev_net = [float(o[20]) for o in next_obs]
-            buffer.add(obs_list, actions, stems_rewards, next_obs, done)
-            if step % 10 == 0 and len(buffer) >= config.training.batch_size:
-                agent.update(buffer.sample(config.training.batch_size))
+            hist_buf.update(next_obs)
+            next_obs_window = hist_buf.get()
+            episode_buffer.add(
+                obs=obs_list, actions=actions, rewards=stems_rewards,
+                next_obs=next_obs, done=done, history=obs_window,
+                next_history=next_obs_window, raw_actions=agent._last_raw_actions,
+            )
             obs_list = next_obs
-            hist_buf.update(obs_list)
-            step += 1
+        # Single on-policy update per episode
+        batch = episode_buffer.get_batch()
+        agent.update(batch)
 
     # Evaluation
     calc = MetricsCalculator(env.num_buildings, config.cbf)
@@ -321,16 +355,32 @@ def main(args: argparse.Namespace) -> None:
 
     results: Dict[str, Dict[str, float]] = {}
     for name, agent in variants.items():
-        print(f"[ablation] Training/evaluating '{name}' for {args.episodes} episodes ...")
-        # Fresh environment per variant for fairness
         variant_env = STEMSEnvironment(seed=args.seed)
-        metrics = train_and_eval(agent, variant_env, config, args.episodes)
+
+        if name == "Full STEMS" and os.path.isdir(args.checkpoint) and \
+                os.path.exists(os.path.join(args.checkpoint, "encoder.pt")):
+            # Use pre-trained converged checkpoint — no further training needed
+            agent.load(args.checkpoint)
+            print(f"[ablation] '{name}': loaded pre-trained checkpoint from {args.checkpoint}")
+            metrics = _eval_only(agent, variant_env, config)
+        else:
+            print(f"[ablation] Training/evaluating '{name}' for {args.episodes} episodes ...")
+            metrics = train_and_eval(agent, variant_env, config, args.episodes)
+
         results[name] = metrics
         print(f"           cost={metrics['cost']:.2f}  "
               f"discomfort={metrics['discomfort_rate']:.4f}  "
               f"safety_viol={metrics['safety_violation_rate']:.4f}")
 
     print_table4(results)
+
+    # Save results to JSON for downstream use
+    import json
+    out_path = os.path.join(args.checkpoint, "ablation_results.json")
+    os.makedirs(args.checkpoint, exist_ok=True)
+    with open(out_path, "w") as f:
+        json.dump({k: {mk: round(mv, 4) for mk, mv in v.items()} for k, v in results.items()}, f, indent=2)
+    print(f"\n[ablation] Results saved to {out_path}")
     print("\n[ablation] Ablation study complete.")
 
 

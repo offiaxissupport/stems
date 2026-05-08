@@ -335,21 +335,23 @@ def main(args: argparse.Namespace) -> None:
             "eval_cost": list(np.linspace(800, 400, n) + np.random.randn(n) * 30),
         }
 
-    # Sample metrics (normalised – would come from evaluate.py in practice)
-    sample_metrics = {
-        "STEMS":      {"cost": 0.82, "emission": 0.79, "avg_daily_peak": 0.85,
-                       "electricity_consumption": 0.88, "ramping_rate": 0.80,
-                       "discomfort_rate": 0.034, "safety_violation_rate": 0.001},
-        "RuleBased":  {"cost": 1.00, "emission": 1.00, "avg_daily_peak": 1.00,
-                       "electricity_consumption": 1.00, "ramping_rate": 1.00,
-                       "discomfort_rate": 0.089, "safety_violation_rate": 0.052},
-        "SingleSAC":  {"cost": 0.93, "emission": 0.91, "avg_daily_peak": 0.94,
-                       "electricity_consumption": 0.95, "ramping_rate": 0.92,
-                       "discomfort_rate": 0.063, "safety_violation_rate": 0.038},
-        "DMAPPO":     {"cost": 0.89, "emission": 0.87, "avg_daily_peak": 0.91,
-                       "electricity_consumption": 0.92, "ramping_rate": 0.88,
-                       "discomfort_rate": 0.049, "safety_violation_rate": 0.021},
-    }
+    # Load evaluation metrics from evaluate.py output, or fall back to demo
+    eval_path = os.path.join(args.checkpoint, "eval_results.json")
+    if os.path.exists(eval_path):
+        with open(eval_path) as f:
+            sample_metrics = json.load(f)
+        print(f"[viz] Loaded evaluation metrics from {eval_path}")
+    else:
+        print("[viz] No eval_results.json found – run evaluate.py first for real data")
+        print("[viz] Using placeholder metrics for demo")
+        sample_metrics = {
+            "STEMS":      {"cost": 0.82, "emission": 0.79, "avg_daily_peak": 0.85,
+                           "electricity_consumption": 0.88, "ramping_rate": 0.80,
+                           "discomfort_rate": 0.034, "safety_violation_rate": 0.001},
+            "RuleBased":  {"cost": 1.00, "emission": 1.00, "avg_daily_peak": 1.00,
+                           "electricity_consumption": 1.00, "ramping_rate": 1.00,
+                           "discomfort_rate": 0.089, "safety_violation_rate": 0.052},
+        }
 
     # Generate all figures
     plot_training_curves(history, args.output_dir)

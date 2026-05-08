@@ -9,6 +9,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -18,10 +19,13 @@ from stems.config import STEMSConfig
 from stems.environment import STEMSEnvironment
 from stems.graph import BuildingGraph
 from stems.agent import STEMSAgent
-from stems.baselines import RuleBasedAgent, SingleAgentSAC, DMAPPOAgent
+from stems.baselines import (
+    RuleBasedAgent, SingleAgentSAC, DMAPPOAgent,
+    MPCAgent, MADDPGAgent, MARLISAAgent, MADCQAgent, MetaEMSAgent,
+)
 from stems.reward import STEMSReward
 from stems.metrics import MetricsCalculator
-from stems.utils import HistoryBuffer, ReplayBuffer, set_seed
+from stems.utils import HistoryBuffer, EpisodeBuffer, ReplayBuffer, set_seed
 
 
 # ---------------------------------------------------------------------------
@@ -127,7 +131,7 @@ def quick_train(
     episodes: int = 3,
 ) -> None:
     """Short training run so baselines have learned something."""
-    buffer = ReplayBuffer(capacity=50_000)
+    episode_buffer = EpisodeBuffer()
     history_buf = HistoryBuffer(env.num_buildings, env.obs_dim, config.transformer.window_size)
     reward_fn = STEMSReward(
         config=config.reward,
@@ -140,22 +144,28 @@ def quick_train(
         obs_list, _ = env.reset()
         history_buf.reset()
         history_buf.update(obs_list)
+        episode_buffer.reset()
         done = False
-        step = 0
         prev_net = [float(o[20]) for o in obs_list]
         while not done:
-            actions = agent.select_action(obs_list, history_buf.get(), explore=True)
+            obs_window = history_buf.get()
+            actions = agent.select_action(obs_list, obs_window, explore=True)
             next_obs, _, terminated, truncated, _ = env.step(actions)
             done = terminated or truncated
             rewards = reward_fn.compute(obs_list, actions, next_obs, prev_net)
             prev_net = [float(o[20]) for o in next_obs]
-            buffer.add(obs_list, actions, rewards, next_obs, done)
-            if step % 20 == 0 and len(buffer) >= 256:
-                batch = buffer.sample(256)
-                agent.update(batch)
+            history_buf.update(next_obs)
+            next_obs_window = history_buf.get()
+            # Store raw_actions if the agent tracks them, else use actions
+            raw_actions = getattr(agent, "_last_raw_actions", actions)
+            episode_buffer.add(
+                obs=obs_list, actions=actions, rewards=rewards,
+                next_obs=next_obs, done=done, history=obs_window,
+                next_history=next_obs_window, raw_actions=raw_actions,
+            )
             obs_list = next_obs
-            history_buf.update(obs_list)
-            step += 1
+        batch = episode_buffer.get_batch()
+        agent.update(batch)
 
 
 # ---------------------------------------------------------------------------
@@ -234,18 +244,42 @@ def evaluate(args: argparse.Namespace) -> None:
     rule_agent = RuleBasedAgent(num_buildings=B)
     sac_agent = _make_sac(env)
     ppo_agent = _make_ppo(env)
+    mpc_agent = MPCAgent(
+        num_buildings=B, action_dim=env.action_dim,
+        soc_min=config.cbf.SOC_min, soc_max=config.cbf.SOC_max,
+        P_building_max=config.cbf.P_building_max, P_grid_max=config.cbf.P_grid_max,
+    )
+    maddpg_agent = MADDPGAgent(obs_dim=env.obs_dim, action_dim=env.action_dim, num_buildings=B)
+    marlisa_agent = MARLISAAgent(obs_dim=env.obs_dim, action_dim=env.action_dim, num_buildings=B)
+    madcq_agent = MADCQAgent(
+        obs_dim=env.obs_dim, action_dim=env.action_dim, num_buildings=B,
+        soc_min=config.cbf.SOC_min, soc_max=config.cbf.SOC_max,
+    )
+    metaems_agent = MetaEMSAgent(obs_dim=env.obs_dim, action_dim=env.action_dim, num_buildings=B)
 
     # Quick baseline training (few episodes so results are non-trivial)
-    print("[eval] Training SAC baseline ...")
-    quick_train(sac_agent, STEMSEnvironment(schema=args.schema, seed=args.seed + 1), config, episodes=3)
-    print("[eval] Training PPO baseline ...")
-    quick_train(ppo_agent, STEMSEnvironment(schema=args.schema, seed=args.seed + 2), config, episodes=3)
+    learnable_baselines = {
+        "SingleSAC": (sac_agent, args.seed + 1),
+        "DMAPPO": (ppo_agent, args.seed + 2),
+        "MADDPG": (maddpg_agent, args.seed + 3),
+        "MARLISA": (marlisa_agent, args.seed + 4),
+        "MADCQ": (madcq_agent, args.seed + 5),
+        "MetaEMS": (metaems_agent, args.seed + 6),
+    }
+    for bname, (bagent, bseed) in learnable_baselines.items():
+        print(f"[eval] Training {bname} baseline ...")
+        quick_train(bagent, STEMSEnvironment(schema=args.schema, seed=bseed), config, episodes=3)
 
     agents = {
         "STEMS": stems_agent,
         "RuleBased": rule_agent,
+        "MPC": mpc_agent,
         "SingleSAC": sac_agent,
+        "MADDPG": maddpg_agent,
+        "MARLISA": marlisa_agent,
+        "MADCQ": madcq_agent,
         "DMAPPO": ppo_agent,
+        "MetaEMS": metaems_agent,
     }
 
     # ---- normal evaluation ----
@@ -292,6 +326,27 @@ def evaluate(args: argparse.Namespace) -> None:
     coldwave_raw = run_extreme(temp_offset=-10.0)
 
     print_table2(normal_raw, heatwave_raw, coldwave_raw)
+
+    # Save evaluation results to JSON for visualize.py
+    eval_output = {}
+    for name, m in normal_norm.items():
+        eval_output[name] = {k: round(v, 4) for k, v in m.items()}
+    eval_path = os.path.join(args.checkpoint, "eval_results.json")
+    os.makedirs(args.checkpoint, exist_ok=True)
+    with open(eval_path, "w") as f:
+        json.dump(eval_output, f, indent=2)
+    print(f"\n[eval] Normalised results saved to {eval_path}")
+
+    # Save Table II (extreme weather absolute costs) to JSON
+    table2_output = {
+        "normal": {n: round(v.get("cost", 0), 2) for n, v in normal_raw.items()},
+        "heatwave": {n: round(v.get("cost", 0), 2) for n, v in heatwave_raw.items()},
+        "coldwave": {n: round(v.get("cost", 0), 2) for n, v in coldwave_raw.items()},
+    }
+    table2_path = os.path.join(args.checkpoint, "eval_extreme_results.json")
+    with open(table2_path, "w") as f:
+        json.dump(table2_output, f, indent=2)
+    print(f"[eval] Extreme weather results saved to {table2_path}")
 
     print("\n[eval] Evaluation complete.")
 

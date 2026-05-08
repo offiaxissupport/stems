@@ -56,6 +56,9 @@ class MetricsCalculator:
         self.reset()
 
     # ------------------------------------------------------------------
+    # SOC change per unit action (must match CBFShield.SOC_DELTA_RATE)
+    SOC_DELTA_RATE: float = 0.8
+
     def reset(self) -> None:
         """Clear accumulated episode data."""
         self._net_list: List[np.ndarray] = []         # (T,B) over time
@@ -64,7 +67,8 @@ class MetricsCalculator:
         self._t_in_list: List[np.ndarray] = []        # (T,B)
         self._t_set_list: List[np.ndarray] = []       # (T,B)
         self._occupant_list: List[np.ndarray] = []    # (T,B)
-        self._soc_list: List[np.ndarray] = []         # (T,B)
+        self._soc_list: List[np.ndarray] = []         # (T,B) – post-action SOC
+        self._pre_soc_list: List[np.ndarray] = []     # (T,B) – pre-action SOC
         self._action_list: List[np.ndarray] = []      # (T,B,action_dim)
 
     # ------------------------------------------------------------------
@@ -85,6 +89,7 @@ class MetricsCalculator:
         self._t_set_list.append(extract(next_obs_list, _IDX_T_SET))
         self._occupant_list.append(extract(next_obs_list, _IDX_OCCUPANT))
         self._soc_list.append(extract(next_obs_list, _IDX_SOC_ELEC))
+        self._pre_soc_list.append(extract(obs_list, _IDX_SOC_ELEC))
         self._action_list.append(actions.copy())
 
     # ------------------------------------------------------------------
@@ -156,9 +161,41 @@ class MetricsCalculator:
         else:
             discomfort_rate = 0.0
 
-        # 7. Safety violation rate (absolute) – proportion of steps violating SOC bounds
+        # 7. Safety violation rate with avoidable/unavoidable decomposition.
+        #    Constraints checked (Eq 16-18):
+        #      h1: SOC ∈ [SOC_min, SOC_max]
+        #      h2: |net_i| ≤ P_building_max
+        #      h3: Σ net_i ≤ P_grid_max
+        #
+        #    A SOC violation is "unavoidable" when no action in [-1, 1] could
+        #    have kept SOC within bounds from the pre-action state.  Formally:
+        #      best_possible_soc_low  = pre_soc + (-1) * δ  (max discharge)
+        #      best_possible_soc_high = pre_soc + (+1) * δ  (max charge)
+        #    If best_possible_soc_high < SOC_min  → unavoidable undercharge
+        #    If best_possible_soc_low  > SOC_max  → unavoidable overcharge
+        pre_soc = np.stack(self._pre_soc_list, axis=0)  # (T, B)
+        delta = self.SOC_DELTA_RATE
+        best_low  = pre_soc - delta   # max discharge
+        best_high = pre_soc + delta   # max charge
+
         soc_violations = (soc < self.cbf.SOC_min) | (soc > self.cbf.SOC_max)   # (T, B)
-        safety_violation_rate = float(soc_violations.mean())
+        unavoidable_soc = (
+            (best_high < self.cbf.SOC_min) |   # can't charge enough
+            (best_low > self.cbf.SOC_max)      # can't discharge enough
+        )  # (T, B)
+        avoidable_soc = soc_violations & ~unavoidable_soc  # policy could have prevented
+
+        power_violations = np.abs(net) > self.cbf.P_building_max                # (T, B)
+        grid_total = net.sum(axis=1, keepdims=True)                             # (T, 1)
+        grid_violations = np.broadcast_to(
+            grid_total > self.cbf.P_grid_max, (T, B)
+        )                                                                        # (T, B)
+
+        any_violation = soc_violations | power_violations | grid_violations
+        avoidable_violation = avoidable_soc | power_violations | grid_violations
+        unavoidable_violation = any_violation & ~avoidable_violation
+
+        safety_violation_rate = float(any_violation.mean())
 
         result: Dict[str, float] = {
             "cost": cost,
@@ -168,6 +205,13 @@ class MetricsCalculator:
             "ramping_rate": ramping_rate,
             "discomfort_rate": discomfort_rate,
             "safety_violation_rate": safety_violation_rate,
+            # Per-constraint breakdown
+            "soc_violation_rate": float(soc_violations.mean()),
+            "power_violation_rate": float(power_violations.mean()),
+            "grid_violation_rate": float(grid_violations.mean()),
+            # Avoidable vs unavoidable decomposition
+            "avoidable_violation_rate": float(avoidable_violation.mean()),
+            "unavoidable_violation_rate": float(unavoidable_violation.mean()),
         }
 
         # Normalise metrics 1-5 by baseline

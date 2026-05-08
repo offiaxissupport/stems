@@ -1,0 +1,15 @@
+{
+  "cost": 66.50297546386719,
+  "emission": 1083.4801025390625,
+  "avg_daily_peak": 9.194432011966047,
+  "electricity_consumption": 2347.0078125,
+  "ramping_rate": 1.6433703899383545,
+  "discomfort_rate": 0.0016242555495397943,
+  "safety_violation_rate": 0.09921186833565136,
+  "soc_violation_rate": 0.09921186833565136,
+  "power_violation_rate": 0.0,
+  "grid_violation_rate": 0.0,
+  "avoidable_violation_rate": 0.09921186833565136,
+  "unavoidable_violation_rate": 0.0,
+  "episode_reward": -189072.13432973786
+}
