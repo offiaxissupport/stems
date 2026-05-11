@@ -72,13 +72,11 @@ class CBFShield:
     """
 
     # SOC change per unit action per timestep.
-    # Empirically calibrated on CityLearn 2023 Phase-2: observed delta/action
-    # ratios range from 0.0 (building with no battery) to ~0.80 (small-capacity
-    # buildings).  Using 0.8 as a conservative upper bound ensures the QP
-    # constraints are tight enough to actually prevent overcharge/undercharge.
-    # Previously this was 0.1 (factor-of-8 underestimate), which let the CBF
-    # approve actions that caused SOC to jump from 0.2 → 0.93 in one step.
-    SOC_DELTA_RATE: float = 0.8
+    # Must match the mock environment's dynamics: _MockBuilding.step() applies
+    # soc_elec += elec_action * 0.1, so the CBF must use the same coefficient.
+    # A mismatch (e.g. 0.8 vs 0.1) makes the QP over-conservative by 8× and
+    # causes check_violations to disagree with what the environment actually does.
+    SOC_DELTA_RATE: float = 0.1
 
     def __init__(
         self,
@@ -300,7 +298,7 @@ class NeuralSafetyFilter(nn.Module):
     cbf_config : CBFConfig – constraint bounds for the differentiable penalty
     """
 
-    SOC_DELTA_RATE: float = 0.8    # must match CBFShield
+    SOC_DELTA_RATE: float = 0.1    # must match CBFShield and mock env dynamics
 
     def __init__(
         self,

@@ -73,7 +73,7 @@ class CBFConfig:
 @dataclass
 class TrainingConfig:
     """Training loop parameters (Algorithm 2)."""
-    episodes: int = 15
+    episodes: int = 50
     batch_size: int = 512
     buffer_capacity: int = 100_000
     exploration_noise: float = 0.1
@@ -95,9 +95,9 @@ class LagrangianConfig:
     """
     num_constraints: int = 3           # fixed: one per CBF constraint
     cost_limit: float = 0.05           # max allowed violation rate (5 % of steps)
-    lambda_lr: float = 0.01            # Lagrangian multiplier learning rate
-    lambda_init: float = 0.0           # initial λ value (0 = unconstrained start)
-    lambda_max: float = 0.05           # hard cap on λ to prevent runaway penalization
+    lambda_lr: float = 0.005           # Lagrangian multiplier learning rate (stable dual)
+    lambda_init: float = 0.1           # initial λ value — non-zero so constraints respected early
+    lambda_max: float = 1.0            # cap on λ; 0.05 was too small to penalize violations
 
 
 @dataclass

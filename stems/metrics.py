@@ -123,9 +123,10 @@ class MetricsCalculator:
 
         T, B = net.shape
 
-        # 1. Total electricity cost
-        cost = float((net * price).sum())
-        cost = max(cost, 0.0)   # clip to non-negative for reporting
+        # 1. Total electricity cost (imports only)
+        # Keep consistent with evaluate_episode() in train.py and CityLearn pricing
+        # semantics where export is not credited as negative cost.
+        cost = float((np.maximum(net, 0.0) * price).sum())
 
         # 2. Carbon emissions
         emission = float((np.maximum(net, 0.0) * carbon).sum())

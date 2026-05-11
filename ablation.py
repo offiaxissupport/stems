@@ -3,7 +3,7 @@
 Ablation study comparing STEMS variants (Table IV in the paper).
 
 Usage:
-    python ablation.py [--episodes 5]
+    python ablation.py [--episodes 15] [--load-full-checkpoint] [--strict-paper-mode]
 
 Variants:
     Full STEMS            – complete architecture with all components
@@ -31,6 +31,7 @@ from stems.agent import STEMSAgent, Actor, Critic
 from stems.encoder import STEncoder, SpatialGCN, TemporalTransformer
 from stems.cbf import CBFShield
 from stems.metrics import MetricsCalculator
+from stems.paper_mode import validate_strict_paper_mode
 from stems.reward import STEMSReward
 from stems.utils import EpisodeBuffer, HistoryBuffer, set_seed
 
@@ -46,6 +47,21 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--checkpoint", type=str, default="checkpoints/seed1/best/",
                    help="Pre-trained Full STEMS checkpoint; ablated variants train from scratch")
+    p.add_argument(
+        "--strict-paper-mode",
+        action="store_true",
+        help=(
+            "Enforce paper-relatable protocol: fail on mock env and require 8-building setup."
+        ),
+    )
+    p.add_argument(
+        "--load-full-checkpoint",
+        action="store_true",
+        help=(
+            "Load pre-trained Full STEMS checkpoint instead of training it from scratch. "
+            "Disable for a strictly fair ablation protocol where all variants train equally."
+        ),
+    )
     return p.parse_args()
 
 
@@ -348,6 +364,9 @@ def main(args: argparse.Namespace) -> None:
 
     print(f"[ablation] Building environment ...")
     env = STEMSEnvironment(seed=args.seed)
+    if args.strict_paper_mode:
+        validate_strict_paper_mode(env, context="ablation")
+        print("[ablation] Strict paper mode enabled")
     print(f"[ablation] Buildings: {env.num_buildings}, obs_dim: {env.obs_dim}")
 
     print(f"[ablation] Building 5 variants ...")
@@ -356,9 +375,15 @@ def main(args: argparse.Namespace) -> None:
     results: Dict[str, Dict[str, float]] = {}
     for name, agent in variants.items():
         variant_env = STEMSEnvironment(seed=args.seed)
+        if args.strict_paper_mode:
+            validate_strict_paper_mode(variant_env, context=f"ablation variant {name}")
 
-        if name == "Full STEMS" and os.path.isdir(args.checkpoint) and \
-                os.path.exists(os.path.join(args.checkpoint, "encoder.pt")):
+        if (
+            name == "Full STEMS"
+            and args.load_full_checkpoint
+            and os.path.isdir(args.checkpoint)
+            and os.path.exists(os.path.join(args.checkpoint, "encoder.pt"))
+        ):
             # Use pre-trained converged checkpoint — no further training needed
             agent.load(args.checkpoint)
             print(f"[ablation] '{name}': loaded pre-trained checkpoint from {args.checkpoint}")

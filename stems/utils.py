@@ -2,11 +2,12 @@
 Utility classes and helpers for STEMS.
 
 Provides:
-    ReplayBuffer   – circular experience replay store (for off-policy baselines)
-    EpisodeBuffer  – collects one full episode for on-policy training (Algorithm 2)
-    HistoryBuffer  – rolling observation window for the Transformer
-    normalize_obs  – zero-mean unit-variance observation normalisation
-    set_seed       – global random seed helper
+    ReplayBuffer      – circular experience replay store (for off-policy baselines)
+    EpisodeBuffer     – collects one full episode for on-policy training (Algorithm 2)
+    HistoryBuffer     – rolling observation window for the Transformer
+    RunningNormalizer – online Welford mean/std normalizer (nn.Module)
+    normalize_obs     – zero-mean unit-variance observation normalisation
+    set_seed          – global random seed helper
 """
 
 from __future__ import annotations
@@ -17,6 +18,63 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
+import torch.nn as nn
+
+
+# ---------------------------------------------------------------------------
+# RunningNormalizer (online zero-mean unit-std per feature)
+# ---------------------------------------------------------------------------
+
+class RunningNormalizer(nn.Module):
+    """Online running mean/std normalization using Welford's algorithm.
+
+    Implemented as an nn.Module so its buffers are moved with .to(device),
+    included in state_dict for save/load, and shared cleanly between
+    select_action and update.
+
+    Parameters
+    ----------
+    dim     : int   – feature dimension
+    epsilon : float – small constant for numerical stability
+    """
+
+    def __init__(self, dim: int, epsilon: float = 1e-8) -> None:
+        super().__init__()
+        self.epsilon = epsilon
+        # Buffers are not parameters – they don't receive gradients.
+        self.register_buffer("mean", torch.zeros(dim, dtype=torch.float32))
+        self.register_buffer("var",  torch.ones(dim,  dtype=torch.float32))
+        self.register_buffer("count", torch.tensor(0, dtype=torch.long))
+
+    @torch.no_grad()
+    def update(self, x: torch.Tensor) -> None:
+        """Update running stats from a batch x of shape (..., dim).
+
+        Uses Welford's parallel algorithm for numerically stable online variance.
+        """
+        x_flat = x.reshape(-1, x.shape[-1]).float()   # (N, dim)
+        n = x_flat.shape[0]
+        if n == 0:
+            return
+        batch_mean = x_flat.mean(dim=0)
+        batch_var  = x_flat.var(dim=0, unbiased=False)
+
+        total = self.count + n
+        delta = batch_mean - self.mean
+        new_mean = self.mean + delta * (n / total)
+        # Chan et al. parallel formula for combined variance
+        m_a = self.var * self.count
+        m_b = batch_var * n
+        m2  = m_a + m_b + delta.pow(2) * self.count * n / total
+        new_var = m2 / total
+
+        self.mean.copy_(new_mean)
+        self.var.copy_(new_var)
+        self.count.copy_(total)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Normalize x to zero mean, unit std (element-wise per feature)."""
+        return (x - self.mean) / (self.var.sqrt() + self.epsilon)
 
 
 # ---------------------------------------------------------------------------

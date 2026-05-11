@@ -286,13 +286,14 @@ class STEMSEnvironment:
         r"C:\temp\citylearn_src\data\datasets",
     ]
 
-    def __init__(self, schema: Optional[str] = None, seed: int = 0) -> None:
+    def __init__(self, schema: Optional[str] = None, seed: int = 0,
+                 force_mock: bool = False) -> None:
         self._seed = seed
         self._schema = schema or self.SCHEMA
         self._comm_dropout: float = 0.0
         self._temp_offset: float = 0.0   # outdoor temperature offset for extreme weather
 
-        if _CITYLEARN_AVAILABLE:
+        if _CITYLEARN_AVAILABLE and not force_mock:
             try:
                 self._env = CityLearnEnv(schema=self._schema, central_agent=False)
                 self._mock = False
