@@ -326,17 +326,18 @@ def train(args: argparse.Namespace) -> None:
                 constraint_costs=constraint_costs,        # (B, 3) Lagrangian cost signals
             )
 
-            ep_reward += float(np.mean(stems_rewards))
-            ep_steps += 1
-            obs_list = next_obs_list
-
-            # Collect oracle labels for neural filter pretraining
+            # Collect oracle labels BEFORE advancing obs_list so we store the obs
+            # that was actually used to generate _last_raw_actions/_last_qp_safe_actions.
             if not args.no_cbf and nf_pretrain_after > 0:
                 nf_buffer.append((
-                    np.stack(obs_list, axis=0).copy(),          # (B, obs_dim)
+                    np.stack(obs_list, axis=0).copy(),          # (B, obs_dim) current obs
                     agent._last_raw_actions.copy(),              # (B, action_dim) nominal
                     agent._last_qp_safe_actions.copy(),          # (B, action_dim) QP oracle
                 ))
+
+            ep_reward += float(np.mean(stems_rewards))
+            ep_steps += 1
+            obs_list = next_obs_list
 
         # --- Phase 1.5: Pretrain neural filter after warm-up episodes ---
         if (
@@ -386,14 +387,15 @@ def train(args: argparse.Namespace) -> None:
         history["alpha"].append(round(float(ep_alpha), 5))
         history["duration_s"].append(round(duration, 1))
 
+        # Compute star BEFORE updating best_cost so it only marks genuine new bests
+        star = " *" if eval_cost < best_cost else ""
+
         # Save best checkpoint
         if eval_cost < best_cost:
             best_cost = eval_cost
             best_ep = ep
             os.makedirs(best_dir, exist_ok=True)
             agent.save(best_dir)
-
-        star = " *" if eval_cost <= best_cost else ""
         print(
             f"[STEMS] Ep{ep:3d}: reward={ep_reward:8.2f}  "
             f"viol={viol_rate:.3f}  eval_cost={eval_cost:.1f}  "
