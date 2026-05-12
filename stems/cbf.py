@@ -255,18 +255,36 @@ class CBFShield:
 
     # ------------------------------------------------------------------
     def _clip_project(self, actions: np.ndarray, states: List[np.ndarray]) -> np.ndarray:
-        """Analytical clipping fallback when cvxpy is unavailable."""
+        """Analytical clipping fallback when cvxpy is unavailable.
+
+        Clips all three action dimensions:
+          index 0 (DHW storage)      : clipped to [-action_scale, action_scale]
+          index 1 (elec storage)     : clipped to respect SOC bounds
+          index 2 (cooling device)   : clipped to [0, action_scale] (cooling only)
+        """
         B, action_dim = actions.shape
         safe_actions = actions.copy()
 
         for i in range(B):
             soc = float(states[i][_IDX_SOC_ELEC])
-            # Clip electrical storage action to keep SOC in [SOC_min, SOC_max]
-            a1 = float(actions[i, 1])
-            max_charge    = (self.cfg.SOC_max - soc) / self.SOC_DELTA_RATE
-            max_discharge = (soc - self.cfg.SOC_min) / self.SOC_DELTA_RATE
-            a1 = float(np.clip(a1, -max_discharge, max_charge))
-            safe_actions[i, 1] = float(np.clip(a1, -self.action_scale, self.action_scale))
+
+            # index 0: DHW storage – clip to valid action range
+            if action_dim > 0:
+                safe_actions[i, 0] = float(np.clip(
+                    actions[i, 0], -self.action_scale, self.action_scale
+                ))
+
+            # index 1: electrical storage – respect SOC bounds
+            if action_dim > 1:
+                a1 = float(actions[i, 1])
+                max_charge    = (self.cfg.SOC_max - soc) / self.SOC_DELTA_RATE
+                max_discharge = (soc - self.cfg.SOC_min) / self.SOC_DELTA_RATE
+                a1 = float(np.clip(a1, -max_discharge, max_charge))
+                safe_actions[i, 1] = float(np.clip(a1, -self.action_scale, self.action_scale))
+
+            # index 2: cooling device – only cooling allowed (no reverse heating via this action)
+            if action_dim > 2:
+                safe_actions[i, 2] = float(np.clip(actions[i, 2], 0.0, self.action_scale))
 
         return safe_actions
 
@@ -452,7 +470,7 @@ class NeuralSafetyFilter(nn.Module):
 
         # Building power (approximate: treat net as fixed, apply delta)
         pf_battery = 0.1
-        net_pred = net + pf_battery * (a_safe[:, 1] - a_safe[:, 1].detach())
+        net_pred = net + pf_battery * a_safe[:, 1]
         h_build_pos = self.cfg.P_building_max - net_pred
         h_build_neg = net_pred + self.cfg.P_building_max
 

@@ -39,8 +39,8 @@ def parse_args() -> argparse.Namespace:
                    help="Path to STEMS checkpoint directory")
     p.add_argument("--episodes", type=int, default=3, help="Evaluation episodes per agent (averaged)")
     p.add_argument(
-        "--baseline-train-episodes", type=int, default=15,
-        help="Training episodes for learnable baselines before evaluation",
+        "--baseline-train-episodes", type=int, default=50,
+        help="Training episodes for learnable baselines before evaluation (should match STEMS training episodes for fair comparison)",
     )
     p.add_argument("--seed", type=int, default=0, help="Random seed")
     p.add_argument("--schema", type=str, default=None, help="CityLearn schema name or path")

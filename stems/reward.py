@@ -115,11 +115,13 @@ class STEMSReward:
             r_comfort = -self.cfg.lambda_indoor * (t_in - t_set) ** 2
 
             # Eq 9: Renewable utilisation reward
-            # When net < 0 (exporting), full renewable credit; use max(0, e_i) for
-            # the denominator to avoid inflation of the ratio on negative net.
-            denom = solar_i + max(0.0, e_i)
+            # renewable_ratio = fraction of building load covered by solar (capped at 1).
+            # Uses non_shiftable_load as the demand denominator so the ratio increases
+            # monotonically with solar generation – the agent is rewarded for producing
+            # more solar relative to load.
             if solar_i > 1e-8:
-                renewable_ratio = min(solar_i / max(denom, solar_i), 1.0)
+                load_i = float(next_i[_IDX_LOAD]) if _IDX_LOAD < len(next_i) else max(solar_i, 1e-8)
+                renewable_ratio = min(solar_i / max(load_i, 1e-8), 1.0)
             else:
                 renewable_ratio = 0.0
             r_renew = self.cfg.xi * renewable_ratio

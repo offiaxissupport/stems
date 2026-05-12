@@ -410,6 +410,43 @@ class STEMSAgent:
         return final_actions
 
     # ------------------------------------------------------------------
+    @staticmethod
+    def _compute_gae(
+        rewards: torch.Tensor,
+        values: torch.Tensor,
+        next_values: torch.Tensor,
+        dones: torch.Tensor,
+        gamma: float = 0.99,
+        lam: float = 0.95,
+    ) -> torch.Tensor:
+        """Generalised Advantage Estimation (GAE-λ).
+
+        Reduces variance of policy gradient on long episodes compared to 1-step TD.
+        A_t = Σ_{l=0}^{∞} (γλ)^l δ_{t+l},  δ_t = r_t + γV(s_{t+1})(1-d_t) - V(s_t)
+
+        Parameters
+        ----------
+        rewards     : (N,) per-timestep rewards for one building
+        values      : (N,) V(s_t) from critic
+        next_values : (N,) V(s_{t+1}) from target critic
+        dones       : (N,) episode termination flags (1.0 at terminal step)
+        gamma       : discount factor
+        lam         : GAE lambda (0=TD(0), 1=Monte Carlo); 0.95 is standard
+
+        Returns
+        -------
+        advantages : (N,) GAE estimates
+        """
+        N = rewards.shape[0]
+        advantages = torch.zeros_like(rewards)
+        last_gae = torch.tensor(0.0, device=rewards.device)
+        for t in reversed(range(N)):
+            delta = rewards[t] + gamma * next_values[t] * (1.0 - dones[t]) - values[t]
+            last_gae = delta + gamma * lam * (1.0 - dones[t]) * last_gae
+            advantages[t] = last_gae
+        return advantages
+
+    # ------------------------------------------------------------------
     def update(self, batch: Dict[str, Any]) -> Dict[str, float]:
         """One gradient update step using a sampled mini-batch.
 
@@ -558,12 +595,13 @@ class STEMSAgent:
             repr_b    = repr_nb[:, b, :]
             rewards_b = rewards_tensor[:, b]
             with torch.no_grad():
-                v_b   = self.critics[b](repr_nb[:, b, :])
-                # Use target critic for advantage bootstrap (same stable target as critic loss)
-                nv_b  = self.target_critics[b](repr_next_nb[:, b, :])
-                t_b   = rewards_b + gamma * nv_b * (1.0 - dones_tensor)
-                adv   = (t_b - v_b)
-                # Normalise advantage for training stability
+                v_b  = self.critics[b](repr_nb[:, b, :])
+                nv_b = self.target_critics[b](repr_next_nb[:, b, :])
+                # GAE-λ advantage (lower variance than 1-step TD on 8760-step episodes)
+                adv = self._compute_gae(
+                    rewards_b, v_b, nv_b, dones_tensor,
+                    gamma=gamma, lam=0.95,
+                )
                 adv = (adv - adv.mean()) / (adv.std() + 1e-8)
 
             pg_a_b = pg_actions_tensor[:, b, :]  # safe actions in (-1, 1), (N, action_dim)
@@ -578,22 +616,15 @@ class STEMSAgent:
             else:
                 lambda_penalty = torch.zeros(N, device=self.device)
 
-            # Correct REINFORCE+SAC-entropy actor loss (Eq 24):
-            # L_actor = -E[(A - λ·A_c - α) · log_π(a|s)]
-            # Subtracting α shifts the advantage baseline by the entropy temperature,
-            # which is equivalent to adding an entropy bonus α·H(π) = -α·E[log_π].
-            # Do NOT multiply α by log_prob inside the advantage — that creates a
-            # runaway feedback (log_prob grows negative → advantage grows positive
-            # → actor loss diverges to -∞).
-            effective_adv = (adv - lambda_penalty - alpha).detach()  # (N,)
-            a_loss = -(effective_adv * log_prob).mean()
+            effective_adv = (adv - lambda_penalty).detach()  # (N,)
+            # SAC entropy bonus: maximise entropy separately from advantage
+            # L = -E[A * log_π] + α * E[log_π]  (standard SAC formulation)
+            a_loss = -(effective_adv * log_prob).mean() + alpha * log_prob.mean()
             actor_loss_total = actor_loss_total + a_loss
             total_actor_loss += a_loss.item()
 
-            # Alpha (temperature) update: detached log_prob so only log_alpha gets grad
-            with torch.no_grad():
-                log_prob_detached = self.actors[b].log_prob_of(repr_b, pg_a_b)
-            alpha_loss_b = -(self.log_alpha * (log_prob_detached + self._target_entropy)).mean()
+            # Alpha (temperature) update: reuse log_prob already computed above (detached)
+            alpha_loss_b = -(self.log_alpha * (log_prob.detach() + self._target_entropy)).mean()
             alpha_loss_total = alpha_loss_total + alpha_loss_b
 
         # --- Neural filter safety gradient (online fine-tuning) ---

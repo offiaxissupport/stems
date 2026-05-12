@@ -57,7 +57,7 @@ class MetricsCalculator:
 
     # ------------------------------------------------------------------
     # SOC change per unit action (must match CBFShield.SOC_DELTA_RATE)
-    SOC_DELTA_RATE: float = 0.8
+    SOC_DELTA_RATE: float = 0.1   # must match CBFShield.SOC_DELTA_RATE and mock env dynamics
 
     def reset(self) -> None:
         """Clear accumulated episode data."""
