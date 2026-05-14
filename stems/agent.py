@@ -360,7 +360,7 @@ class STEMSAgent:
                     # Deterministic: use mean action (no tanh noise)
                     mean, _ = self.actors[i](r_i)
                     a_i = torch.tanh(mean)
-                actions_list.append(a_i.squeeze(0).cpu().numpy())
+                actions_list.append(np.array(a_i.squeeze(0).detach().tolist(), dtype=np.float32))
 
         actions = np.stack(actions_list, axis=0)   # (B, action_dim)
 

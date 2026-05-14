@@ -23,6 +23,7 @@ from stems.baselines import (
     RuleBasedAgent, SingleAgentSAC, DMAPPOAgent,
     MPCAgent, MADDPGAgent, MARLISAAgent, MADCQAgent, MetaEMSAgent,
 )
+from stems.hierarchical import HierarchicalSTEMSAgent
 from stems.reward import STEMSReward
 from stems.metrics import MetricsCalculator
 from stems.paper_mode import validate_strict_paper_mode
@@ -84,6 +85,36 @@ def _make_stems(env: STEMSEnvironment, checkpoint: str) -> STEMSAgent:
         print(f"[eval] Loaded STEMS checkpoint from {checkpoint}")
     else:
         print("[eval] No checkpoint found – using untrained STEMS weights (run train.py first for best results)")
+    return agent
+
+
+def _make_hierarchical(
+    env: STEMSEnvironment, checkpoint: str
+) -> HierarchicalSTEMSAgent:
+    config = STEMSConfig()
+    B = env.num_buildings
+    adj = None
+    try:
+        info  = env.get_building_info()
+        graph = BuildingGraph(B, info["positions"], info["features"], config.graph)
+        adj   = graph.compute_edge_weights().numpy()
+    except Exception:
+        pass
+    agent = HierarchicalSTEMSAgent(
+        obs_dim=env.obs_dim,
+        action_dim=env.action_dim,
+        num_buildings=B,
+        adj=adj,
+        use_cbf=True,
+    )
+    hier_ckpt = os.path.join(checkpoint, "hierarchical", "best")
+    if os.path.isdir(hier_ckpt) and os.path.exists(
+        os.path.join(hier_ckpt, "hier_encoder.pt")
+    ):
+        agent.load(hier_ckpt)
+        print(f"[eval] Loaded Hierarchical checkpoint from {hier_ckpt}")
+    else:
+        print("[eval] No Hierarchical checkpoint – using untrained weights (run train_hierarchical.py first)")
     return agent
 
 
@@ -153,14 +184,30 @@ def _mean_metrics(metrics_list: List[Dict[str, float]]) -> Dict[str, float]:
 # Quick training for SAC/PPO baselines
 # ---------------------------------------------------------------------------
 
+# Off-policy agents use a replay buffer with per-step mini-batch updates;
+# on-policy agents collect a full episode then update once.
+_OFF_POLICY_TYPES: tuple = (SingleAgentSAC, MADDPGAgent, MARLISAAgent, MADCQAgent)
+
+_REPLAY_CAPACITY = 50_000
+_REPLAY_BATCH    = 256
+_WARMUP_STEPS    = 512   # fill buffer before first update
+
+
 def quick_train(
     agent: Any,
     env: STEMSEnvironment,
     config: STEMSConfig,
     episodes: int = 3,
 ) -> None:
-    """Short training run so baselines have learned something."""
-    episode_buffer = EpisodeBuffer()
+    """Short training run so baselines have learned something.
+
+    Off-policy agents (SingleSAC, MADDPG, MARLISA, MADCQ) now use a proper
+    replay buffer with random mini-batch sampling at every environment step,
+    instead of collecting a full episode on-policy and calling update once.
+    This was the missing piece that prevented these agents from learning.
+    """
+    is_off_policy = isinstance(agent, _OFF_POLICY_TYPES)
+
     history_buf = HistoryBuffer(env.num_buildings, env.obs_dim, config.transformer.window_size)
     reward_fn = STEMSReward(
         config=config.reward,
@@ -169,13 +216,22 @@ def quick_train(
         P_building_max=config.cbf.P_building_max,
     )
 
+    if is_off_policy:
+        replay = ReplayBuffer(capacity=_REPLAY_CAPACITY)
+    else:
+        episode_buffer = EpisodeBuffer()
+
+    total_steps = 0
+
     for _ in range(episodes):
         obs_list, _ = env.reset()
         history_buf.reset()
         history_buf.update(obs_list)
-        episode_buffer.reset()
+        if not is_off_policy:
+            episode_buffer.reset()
         done = False
         prev_net = [float(o[20]) for o in obs_list]
+
         while not done:
             obs_window = history_buf.get()
             actions = agent.select_action(obs_list, obs_window, explore=True)
@@ -185,16 +241,30 @@ def quick_train(
             prev_net = [float(o[20]) for o in next_obs]
             history_buf.update(next_obs)
             next_obs_window = history_buf.get()
-            # Store raw_actions if the agent tracks them, else use actions
             raw_actions = getattr(agent, "_last_raw_actions", actions)
-            episode_buffer.add(
-                obs=obs_list, actions=actions, rewards=rewards,
-                next_obs=next_obs, done=done, history=obs_window,
-                next_history=next_obs_window, raw_actions=raw_actions,
-            )
+
+            if is_off_policy:
+                replay.add(
+                    obs=obs_list, actions=actions, rewards=rewards,
+                    next_obs=next_obs, done=done, history=obs_window,
+                    next_history=next_obs_window, raw_actions=raw_actions,
+                )
+                total_steps += 1
+                # Sample a random mini-batch once the buffer has enough transitions
+                if total_steps >= _WARMUP_STEPS and replay.is_ready:
+                    agent.update(replay.sample(_REPLAY_BATCH))
+            else:
+                episode_buffer.add(
+                    obs=obs_list, actions=actions, rewards=rewards,
+                    next_obs=next_obs, done=done, history=obs_window,
+                    next_history=next_obs_window, raw_actions=raw_actions,
+                )
             obs_list = next_obs
-        batch = episode_buffer.get_batch()
-        agent.update(batch)
+
+        # On-policy agents update at episode end with the full trajectory
+        if not is_off_policy:
+            batch = episode_buffer.get_batch()
+            agent.update(batch)
 
 
 # ---------------------------------------------------------------------------
@@ -310,6 +380,7 @@ def evaluate(args: argparse.Namespace) -> None:
 
     # ---- build agents ----
     stems_agent = _make_stems(env, args.checkpoint)
+    hier_agent  = _make_hierarchical(env, args.checkpoint)
     rule_agent = RuleBasedAgent(num_buildings=B)
     sac_agent = _make_sac(env)
     ppo_agent = _make_ppo(env)
@@ -346,6 +417,7 @@ def evaluate(args: argparse.Namespace) -> None:
 
     agents = {
         "STEMS": stems_agent,
+        "HierSTEMS": hier_agent,
         "RuleBased": rule_agent,
         "MPC": mpc_agent,
         "SingleSAC": sac_agent,

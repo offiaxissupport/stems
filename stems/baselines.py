@@ -215,7 +215,7 @@ class SingleAgentSAC:
                 else:
                     mean, _ = self.policies[i](x)
                     a = torch.tanh(mean)
-            actions[i] = a.squeeze(0).cpu().numpy()
+            actions[i] = np.array(a.squeeze(0).detach().tolist(), dtype=np.float32)
         return actions
 
     # ------------------------------------------------------------------
@@ -350,6 +350,7 @@ class DMAPPOAgent:
         lr: float = 3e-4,
         gamma: float = 0.99,
         clip_eps: float = 0.2,
+        ppo_epochs: int = 4,
         cbf_lambda: float = 1.0,
         soc_min: float = 0.1,
         soc_max: float = 0.9,
@@ -360,6 +361,7 @@ class DMAPPOAgent:
         self.action_dim = action_dim
         self.gamma = gamma
         self.clip_eps = clip_eps
+        self.ppo_epochs = ppo_epochs  # number of PPO update epochs per batch
         self.cbf_lambda = cbf_lambda
         self.soc_min = soc_min
         self.soc_max = soc_max
@@ -409,7 +411,7 @@ class DMAPPOAgent:
                 else:
                     a = mean
                 a = torch.clamp(a, -1.0, 1.0)
-            actions[i] = a.squeeze(0).cpu().numpy()
+            actions[i] = np.array(a.squeeze(0).detach().tolist(), dtype=np.float32)
         return actions
 
     # ------------------------------------------------------------------
@@ -448,18 +450,27 @@ class DMAPPOAgent:
             critic_loss.backward()
             self.critic_opts[b].step()
 
-            # PPO clip actor update
-            old_log_prob = self.actors[b].log_prob(obs_b, actions_b).detach()
-            new_log_prob = self.actors[b].log_prob(obs_b, actions_b)
-            ratio = (new_log_prob - old_log_prob).exp()
+            # PPO clip actor update (multi-epoch).
+            # Bug fix: old_log_prob must be computed from the policy BEFORE any
+            # gradient update, then held fixed across ppo_epochs. Computing both
+            # old and new inside the same forward pass (pre-step) gives ratio=1
+            # always, making the clip dead. We now compute old_log_prob once with
+            # no_grad, then iterate: after the first step() the actor weights
+            # change, so subsequent epochs produce ratio != 1 and the clip fires.
             adv = advantages.detach()
-            surr1 = ratio * adv
-            surr2 = torch.clamp(ratio, 1 - self.clip_eps, 1 + self.clip_eps) * adv
-            actor_loss = -torch.min(surr1, surr2).mean()
+            with torch.no_grad():
+                old_log_prob = self.actors[b].log_prob(obs_b, actions_b)
 
-            self.actor_opts[b].zero_grad()
-            actor_loss.backward()
-            self.actor_opts[b].step()
+            for _epoch in range(self.ppo_epochs):
+                new_log_prob = self.actors[b].log_prob(obs_b, actions_b)
+                ratio = (new_log_prob - old_log_prob).exp()
+                surr1 = ratio * adv
+                surr2 = torch.clamp(ratio, 1 - self.clip_eps, 1 + self.clip_eps) * adv
+                actor_loss = -torch.min(surr1, surr2).mean()
+
+                self.actor_opts[b].zero_grad()
+                actor_loss.backward()
+                self.actor_opts[b].step()
 
             losses["actor_loss"] += actor_loss.item()
             losses["critic_loss"] += critic_loss.item()
@@ -656,7 +667,7 @@ class MADDPGAgent:
         for i, obs in enumerate(obs_list):
             x = torch.tensor(obs, dtype=torch.float32).unsqueeze(0).to(self.device)
             with torch.no_grad():
-                a = self.actors[i](x).squeeze(0).cpu().numpy()
+                a = np.array(self.actors[i](x).squeeze(0).detach().tolist(), dtype=np.float32)
             if explore:
                 a += np.random.normal(0, self.noise_std, size=a.shape)
             actions[i] = np.clip(a, -1.0, 1.0)
@@ -834,7 +845,7 @@ class MARLISAAgent:
                 else:
                     mean, _ = self.policies[i](x)
                     a = torch.tanh(mean)
-            actions[i] = a.squeeze(0).cpu().numpy()
+            actions[i] = np.array(a.squeeze(0).detach().tolist(), dtype=np.float32)
         return actions
 
     def update(self, batch: Dict[str, Any]) -> Dict[str, float]:
