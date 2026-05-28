@@ -25,7 +25,9 @@ def validate_strict_paper_mode(env: STEMSEnvironment, context: str) -> None:
     if env.obs_dim != 28:
         errors.append(f"Strict paper mode expects obs_dim=28, got {env.obs_dim}.")
     if env.action_dim != 3:
-        errors.append(f"Strict paper mode expects action_dim=3, got {env.action_dim}.")
+        errors.append(f"Strict paper mode expects the 3-action Travis setup, got action_dim={env.action_dim}.")
+    if "electrical_storage" not in env.action_names:
+        errors.append("Strict paper mode requires an electrical_storage action for CBF safety.")
 
     if errors:
         joined = "\n - ".join(errors)
@@ -34,5 +36,5 @@ def validate_strict_paper_mode(env: STEMSEnvironment, context: str) -> None:
             + (f" ({context})" if context else "")
             + ":\n - "
             + joined
-            + "\nUse a real CityLearn Phase-2 setup (8 buildings) before paper-comparable runs."
+            + "\nRun `python -B setup_citylearn_8b.py --validate` to create the real 8-building Travis schema."
         )

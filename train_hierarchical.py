@@ -72,6 +72,9 @@ def parse_args() -> argparse.Namespace:
                    help="Event-trigger Euclidean distance threshold")
     p.add_argument("--no-cbf",       action="store_true",
                    help="Disable CBF safety shield")
+    p.add_argument("--episode-len",  type=int,   default=0,
+                   help="Override episode length for LargeGridEnv (0 = default 8760). "
+                        "Use e.g. 500 for fast CPU experiments.")
     p.add_argument("--schema",       type=str,   default=None,
                    help="CityLearn schema (ignored when --num-buildings > 0)")
     p.add_argument("--device",       type=str,   default="cpu",
@@ -86,9 +89,10 @@ def parse_args() -> argparse.Namespace:
 def make_envs(args: argparse.Namespace):
     """Return (train_env, eval_env)."""
     if args.num_buildings > 0:
-        print(f"[hier] Using LargeGridEnv with {args.num_buildings} buildings")
-        train_env = LargeGridEnv(num_buildings=args.num_buildings, seed=args.seed)
-        eval_env  = LargeGridEnv(num_buildings=args.num_buildings, seed=args.seed + 1000)
+        ep_len = args.episode_len if args.episode_len > 0 else 8760
+        print(f"[hier] Using LargeGridEnv with {args.num_buildings} buildings, episode_len={ep_len}")
+        train_env = LargeGridEnv(num_buildings=args.num_buildings, seed=args.seed,         episode_len=ep_len)
+        eval_env  = LargeGridEnv(num_buildings=args.num_buildings, seed=args.seed + 1000, episode_len=ep_len)
     else:
         train_env = STEMSEnvironment(schema=args.schema, seed=args.seed)
         eval_env  = STEMSEnvironment(schema=args.schema, seed=args.seed + 1000)
@@ -120,6 +124,7 @@ def make_agent(env, args: argparse.Namespace) -> HierarchicalSTEMSAgent:
         event_threshold=args.event_threshold,
         use_cbf=not args.no_cbf,
         device=args.device,
+        electrical_storage_action_index=env.electrical_storage_action_index,
     )
     print(
         f"[hier] Agent: B={B} buildings, K={agent.cluster.K} clusters, "
@@ -162,7 +167,7 @@ def evaluate_once(
         obs_list = next_obs
         history_buf.update(obs_list)
 
-    return calc.summary()
+    return calc.compute_all()
 
 
 # ---------------------------------------------------------------------------

@@ -83,10 +83,27 @@ class CBFShield:
         config: Optional[CBFConfig] = None,
         num_buildings: int = 3,
         action_scale: float = 1.0,
+        electrical_storage_action_index: Optional[int] = None,
     ) -> None:
         self.cfg = config or CBFConfig()
         self.B = num_buildings
         self.action_scale = action_scale
+        self.electrical_storage_action_index = electrical_storage_action_index
+
+    def _elec_idx(self, action_dim: int) -> int:
+        if self.electrical_storage_action_index is None:
+            return 1 if action_dim > 2 else 0
+        return max(0, min(int(self.electrical_storage_action_index), action_dim - 1))
+
+    def _power_factors(self, action_dim: int) -> np.ndarray:
+        factors = np.zeros(action_dim, dtype=np.float32)
+        base = np.asarray(self.POWER_FACTORS[:action_dim], dtype=np.float32)
+        factors[: len(base)] = base
+        elec_idx = self._elec_idx(action_dim)
+        factors[elec_idx] = 0.1
+        if action_dim == 2 and elec_idx == 0:
+            factors[1] = 0.5
+        return factors
 
     # ------------------------------------------------------------------
     # Constraint functions
@@ -132,7 +149,8 @@ class CBFShield:
 
         for i in range(B):
             soc = float(states[i][_IDX_SOC_ELEC])
-            delta_soc = float(actions[i, 1]) * self.SOC_DELTA_RATE   # rough SOC change per step
+            elec_idx = self._elec_idx(actions.shape[1])
+            delta_soc = float(actions[i, elec_idx]) * self.SOC_DELTA_RATE
             net_i = float(states[i][_IDX_NET])
 
             h_lo, h_hi = self._h_soc(soc, delta_soc)
@@ -187,7 +205,8 @@ class CBFShield:
             return False
         for i in range(self.B):
             soc = float(states[i][_IDX_SOC_ELEC])
-            delta_soc = float(actions[i, 1]) * self.SOC_DELTA_RATE
+            elec_idx = self._elec_idx(actions.shape[1])
+            delta_soc = float(actions[i, elec_idx]) * self.SOC_DELTA_RATE
             h_lo, h_hi = self._h_soc(soc, delta_soc)
             if h_lo < 0.0 or h_hi < 0.0:
                 return False
@@ -216,15 +235,16 @@ class CBFShield:
             constraints = []
 
             # SOC constraints (Eq 16): h_battery >= 0
-            delta_soc = u[1] * self.SOC_DELTA_RATE
+            elec_idx = self._elec_idx(action_dim)
+            delta_soc = u[elec_idx] * self.SOC_DELTA_RATE
             constraints.append(soc + delta_soc >= self.cfg.SOC_min)
             constraints.append(soc + delta_soc <= self.cfg.SOC_max)
 
             # Building power constraint (Eq 17): P_building_max - |e_pred| >= 0
-            pf = self.POWER_FACTORS
+            pf = self._power_factors(action_dim)
             predicted_delta = sum(
                 pf[d] * (u[d] - float(a_nom[d]))
-                for d in range(min(action_dim, len(pf)))
+                for d in range(action_dim)
             )
             predicted_net = net_i + predicted_delta
             constraints.append(predicted_net <= self.cfg.P_building_max)
@@ -257,34 +277,22 @@ class CBFShield:
     def _clip_project(self, actions: np.ndarray, states: List[np.ndarray]) -> np.ndarray:
         """Analytical clipping fallback when cvxpy is unavailable.
 
-        Clips all three action dimensions:
-          index 0 (DHW storage)      : clipped to [-action_scale, action_scale]
-          index 1 (elec storage)     : clipped to respect SOC bounds
-          index 2 (cooling device)   : clipped to [0, action_scale] (cooling only)
+        Clips all action dimensions to [-action_scale, action_scale] and clips
+        the electrical-storage action further to respect SOC bounds.
         """
         B, action_dim = actions.shape
-        safe_actions = actions.copy()
+        safe_actions = np.clip(actions.copy(), -self.action_scale, self.action_scale)
+        elec_idx = self._elec_idx(action_dim)
 
         for i in range(B):
             soc = float(states[i][_IDX_SOC_ELEC])
 
-            # index 0: DHW storage – clip to valid action range
             if action_dim > 0:
-                safe_actions[i, 0] = float(np.clip(
-                    actions[i, 0], -self.action_scale, self.action_scale
-                ))
-
-            # index 1: electrical storage – respect SOC bounds
-            if action_dim > 1:
-                a1 = float(actions[i, 1])
+                a_elec = float(actions[i, elec_idx])
                 max_charge    = (self.cfg.SOC_max - soc) / self.SOC_DELTA_RATE
                 max_discharge = (soc - self.cfg.SOC_min) / self.SOC_DELTA_RATE
-                a1 = float(np.clip(a1, -max_discharge, max_charge))
-                safe_actions[i, 1] = float(np.clip(a1, -self.action_scale, self.action_scale))
-
-            # index 2: cooling device – only cooling allowed (no reverse heating via this action)
-            if action_dim > 2:
-                safe_actions[i, 2] = float(np.clip(actions[i, 2], 0.0, self.action_scale))
+                a_elec = float(np.clip(a_elec, -max_discharge, max_charge))
+                safe_actions[i, elec_idx] = float(np.clip(a_elec, -self.action_scale, self.action_scale))
 
         return safe_actions
 
@@ -327,6 +335,7 @@ class NeuralSafetyFilter(nn.Module):
         dropout_rate: float = 0.1,
         uncertainty_threshold: float = 0.05,
         cbf_config: Optional[CBFConfig] = None,
+        electrical_storage_action_index: Optional[int] = None,
     ) -> None:
         super().__init__()
         self.obs_dim = obs_dim
@@ -334,6 +343,11 @@ class NeuralSafetyFilter(nn.Module):
         self.E = num_ensemble
         self.uncertainty_threshold = uncertainty_threshold
         self.cfg = cbf_config or CBFConfig()
+        self.electrical_storage_action_index = (
+            1 if electrical_storage_action_index is None and action_dim > 2
+            else 0 if electrical_storage_action_index is None
+            else max(0, min(int(electrical_storage_action_index), action_dim - 1))
+        )
 
         in_dim = obs_dim + action_dim
 
@@ -462,7 +476,8 @@ class NeuralSafetyFilter(nn.Module):
         """
         soc   = obs[:, _IDX_SOC_ELEC]   # (B,)
         net   = obs[:, _IDX_NET]         # (B,)
-        delta = a_safe[:, 1] * self.SOC_DELTA_RATE  # (B,) SOC change
+        elec_idx = self.electrical_storage_action_index
+        delta = a_safe[:, elec_idx] * self.SOC_DELTA_RATE  # (B,) SOC change
 
         # SOC bounds
         h_soc_lo = soc + delta - self.cfg.SOC_min   # (B,)
@@ -470,7 +485,7 @@ class NeuralSafetyFilter(nn.Module):
 
         # Building power (approximate: treat net as fixed, apply delta)
         pf_battery = 0.1
-        net_pred = net + pf_battery * a_safe[:, 1]
+        net_pred = net + pf_battery * a_safe[:, elec_idx]
         h_build_pos = self.cfg.P_building_max - net_pred
         h_build_neg = net_pred + self.cfg.P_building_max
 

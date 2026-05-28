@@ -40,6 +40,7 @@ from stems.config import STEMSConfig
 from stems.environment import STEMSEnvironment
 from stems.graph import BuildingGraph
 from stems.agent import STEMSAgent
+from stems.paper_mode import validate_strict_paper_mode
 from stems.utils import HistoryBuffer, set_seed
 import torch
 
@@ -53,6 +54,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--checkpoint", type=str, default="checkpoints/")
     p.add_argument("--output-dir", type=str, default="plots/")
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--require-real-data", action="store_true",
+                   help="Fail if training/evaluation JSON files are missing instead of using demo placeholders")
+    p.add_argument("--paper-reproduction", action="store_true",
+                   help="Require real CityLearn and real result files for paper figures")
     return p.parse_args()
 
 
@@ -70,6 +75,7 @@ def _load_agent(checkpoint: str, env: STEMSEnvironment) -> STEMSAgent:
         num_buildings=env.num_buildings,
         building_graph=graph,
         config=config,
+        electrical_storage_action_index=env.electrical_storage_action_index,
     )
     if os.path.isdir(checkpoint) and os.path.exists(os.path.join(checkpoint, "encoder.pt")):
         agent.load(checkpoint)
@@ -317,6 +323,9 @@ def main(args: argparse.Namespace) -> None:
     os.makedirs(args.output_dir, exist_ok=True)
 
     env = STEMSEnvironment(seed=args.seed)
+    if args.paper_reproduction:
+        args.require_real_data = True
+        validate_strict_paper_mode(env, context="visualization")
     agent = _load_agent(args.checkpoint, env)
 
     # Load training history if available
@@ -325,6 +334,10 @@ def main(args: argparse.Namespace) -> None:
         with open(hist_path) as f:
             history = json.load(f)
     else:
+        if args.require_real_data:
+            raise FileNotFoundError(
+                f"Missing training history at {hist_path}; run train.py before paper visualization."
+            )
         print("[viz] No training history found – generating synthetic history for demo")
         n = 15
         history = {
@@ -342,6 +355,10 @@ def main(args: argparse.Namespace) -> None:
             sample_metrics = json.load(f)
         print(f"[viz] Loaded evaluation metrics from {eval_path}")
     else:
+        if args.require_real_data:
+            raise FileNotFoundError(
+                f"Missing evaluation metrics at {eval_path}; run evaluate.py before paper visualization."
+            )
         print("[viz] No eval_results.json found – run evaluate.py first for real data")
         print("[viz] Using placeholder metrics for demo")
         sample_metrics = {

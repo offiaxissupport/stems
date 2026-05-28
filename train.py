@@ -54,7 +54,35 @@ def parse_args() -> argparse.Namespace:
                    help="Episode after which to pretrain neural filter (0 = disable)")
     p.add_argument("--nf-pretrain-steps", type=int, default=200,
                    help="Gradient steps for neural filter pretraining")
+    p.add_argument(
+        "--train-eval-interval",
+        type=int,
+        default=None,
+        help="Run full deterministic training-time evaluation every N episodes; 0 disables it. Default: 1, or 0 in paper mode.",
+    )
+    p.add_argument(
+        "--paper-reproduction",
+        action="store_true",
+        help="Strict paper protocol: real CityLearn only and neural filter disabled.",
+    )
+    p.add_argument(
+        "--extended-safety",
+        action="store_true",
+        help="Label this run as the extended safety protocol with neural filter/Lagrangian additions.",
+    )
     return p.parse_args()
+
+
+def configure_protocol_args(args: argparse.Namespace) -> argparse.Namespace:
+    """Apply train-time protocol defaults."""
+    if args.paper_reproduction:
+        args.strict_paper_mode = True
+        args.mock = False
+        args.nf_pretrain_after = 0
+        args.nf_pretrain_steps = 0
+    if args.train_eval_interval is None:
+        args.train_eval_interval = 0 if args.paper_reproduction else 1
+    return args
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +204,7 @@ def evaluate_episode(agent: STEMSAgent, env: STEMSEnvironment, config: STEMSConf
 # ---------------------------------------------------------------------------
 
 def train(args: argparse.Namespace) -> None:
+    args = configure_protocol_args(args)
     set_seed(args.seed)
     config = STEMSConfig()
     config.training.episodes = args.episodes
@@ -188,6 +217,10 @@ def train(args: argparse.Namespace) -> None:
         validate_strict_paper_mode(env, context="training")
         validate_strict_paper_mode(eval_env, context="training eval env")
         print("[STEMS] Strict paper mode enabled")
+    if args.paper_reproduction:
+        print("[STEMS] Paper reproduction protocol: neural filter pretraining disabled")
+    elif args.extended_safety:
+        print("[STEMS] Extended safety protocol: neural filter/Lagrangian additions enabled")
 
     if env.using_mock:
         print("[STEMS] Using mock environment (CityLearn not installed)")
@@ -214,6 +247,7 @@ def train(args: argparse.Namespace) -> None:
         building_graph=graph,
         config=config,
         use_cbf=not args.no_cbf,
+        electrical_storage_action_index=env.electrical_storage_action_index,
     )
 
     # Episode buffer (on-policy) and history buffer
@@ -256,8 +290,11 @@ def train(args: argparse.Namespace) -> None:
     nf_buffer: List[Any] = []
     nf_pretrain_after = args.nf_pretrain_after if hasattr(args, "nf_pretrain_after") else 5
     nf_pretrain_steps = args.nf_pretrain_steps if hasattr(args, "nf_pretrain_steps") else 200
+    train_eval_interval = max(0, int(getattr(args, "train_eval_interval", 1)))
 
     print(f"\n[STEMS] Starting training for {config.training.episodes} episodes ...")
+    if train_eval_interval == 0:
+        print("[STEMS] Training-time full evaluation disabled; saving latest checkpoint to best/ after each episode.")
     print("-" * 65)
 
     for ep in range(1, config.training.episodes + 1):
@@ -268,6 +305,9 @@ def train(args: argparse.Namespace) -> None:
 
         ep_reward = 0.0
         ep_violations = 0
+        ep_viol_soc = 0
+        ep_viol_power = 0
+        ep_viol_grid = 0
         ep_steps = 0
         prev_net = [float(o[20]) for o in obs_list]
         done = False
@@ -283,10 +323,6 @@ def train(args: argparse.Namespace) -> None:
             # Compute STEMS reward
             stems_rewards = reward_fn.compute(obs_list, actions, next_obs_list, prev_net)
             prev_net = [float(o[20]) for o in next_obs_list]
-
-            if ep_steps > 0 and ep_steps % 500 == 0:
-                print(f"  [Ep{ep}] step={ep_steps}  reward={ep_reward:.1f}  "
-                      f"viol_so_far={ep_violations}", flush=True)
 
             # Constraint cost signals (B, 3): binary violation per constraint per building.
             # k=0: SOC bounds (h1), k=1: per-building power (h2), k=2: grid power (h3)
@@ -306,7 +342,13 @@ def train(args: argparse.Namespace) -> None:
             # Count actual post-step violations (consistent with constraint_costs).
             # This replaces the pre-step check_violations which measures a different
             # time point and could disagree with what the environment actually observed.
-            ep_violations += int(c_soc.sum()) + int(c_power.sum()) + int(grid_violated)
+            step_soc_viol = int(c_soc.sum())
+            step_power_viol = int(c_power.sum())
+            step_grid_viol = int(grid_violated)
+            ep_viol_soc += step_soc_viol
+            ep_viol_power += step_power_viol
+            ep_viol_grid += step_grid_viol
+            ep_violations += step_soc_viol + step_power_viol + step_grid_viol
 
             # Build next_history for storage (after updating with next_obs)
             history_buf.update(next_obs_list)
@@ -328,7 +370,7 @@ def train(args: argparse.Namespace) -> None:
 
             # Collect oracle labels BEFORE advancing obs_list so we store the obs
             # that was actually used to generate _last_raw_actions/_last_qp_safe_actions.
-            if not args.no_cbf and nf_pretrain_after > 0:
+            if not args.paper_reproduction and not args.no_cbf and nf_pretrain_after > 0:
                 nf_buffer.append((
                     np.stack(obs_list, axis=0).copy(),          # (B, obs_dim) current obs
                     agent._last_raw_actions.copy(),              # (B, action_dim) nominal
@@ -337,11 +379,22 @@ def train(args: argparse.Namespace) -> None:
 
             ep_reward += float(np.mean(stems_rewards))
             ep_steps += 1
+            if ep_steps % 500 == 0:
+                possible = ep_steps * (2 * B + 1)
+                viol_rate_so_far = ep_violations / max(possible, 1)
+                avg_reward = ep_reward / max(ep_steps, 1)
+                print(
+                    f"  [Ep{ep}] step={ep_steps}  avg_reward={avg_reward:.3f}  "
+                    f"viol_rate={viol_rate_so_far:.3f}  "
+                    f"soc/power/grid={ep_viol_soc}/{ep_viol_power}/{ep_viol_grid}",
+                    flush=True,
+                )
             obs_list = next_obs_list
 
         # --- Phase 1.5: Pretrain neural filter after warm-up episodes ---
         if (
             not args.no_cbf
+            and not args.paper_reproduction
             and nf_pretrain_after > 0
             and ep == nf_pretrain_after
             and not agent.use_neural_filter
@@ -363,8 +416,11 @@ def train(args: argparse.Namespace) -> None:
         ep_lambdas = losses.get("lambdas", [0.0, 0.0, 0.0])
         ep_alpha = losses.get("alpha", 1.0)
 
-        # Evaluate agent (no noise, no exploration)
-        eval_cost = evaluate_episode(agent, eval_env, config)
+        # Evaluate agent (no noise, no exploration). For paper reproduction this
+        # is disabled by default because it adds another full 8760-step rollout
+        # after every training episode and can dominate runtime with CBF QPs.
+        should_eval = train_eval_interval > 0 and ep % train_eval_interval == 0
+        eval_cost = evaluate_episode(agent, eval_env, config) if should_eval else float("nan")
 
         duration = time.time() - t0
         # Violation rate: ep_violations counts unique constraint events per step
@@ -376,8 +432,11 @@ def train(args: argparse.Namespace) -> None:
         # Log
         history["episode"].append(ep)
         history["total_reward"].append(round(ep_reward, 3))
-        history["eval_cost"].append(round(eval_cost, 3))
+        history["eval_cost"].append(round(eval_cost, 3) if should_eval else None)
         history["safety_violations"].append(round(viol_rate, 4))
+        history.setdefault("soc_violations", []).append(ep_viol_soc)
+        history.setdefault("power_violations", []).append(ep_viol_power)
+        history.setdefault("grid_violations", []).append(ep_viol_grid)
         history["actor_loss"].append(round(ep_actor_loss, 4))
         history["critic_loss"].append(round(ep_critic_loss, 4))
         history["cost_critic_loss"].append(round(ep_cost_critic_loss, 4))
@@ -388,17 +447,22 @@ def train(args: argparse.Namespace) -> None:
         history["duration_s"].append(round(duration, 1))
 
         # Compute star BEFORE updating best_cost so it only marks genuine new bests
-        star = " *" if eval_cost < best_cost else ""
+        star = " *" if should_eval and eval_cost < best_cost else ""
 
         # Save best checkpoint
-        if eval_cost < best_cost:
+        if should_eval and eval_cost < best_cost:
             best_cost = eval_cost
             best_ep = ep
             os.makedirs(best_dir, exist_ok=True)
             agent.save(best_dir)
+        elif not should_eval:
+            best_ep = ep
+            os.makedirs(best_dir, exist_ok=True)
+            agent.save(best_dir)
+        eval_text = f"{eval_cost:.1f}" if should_eval else "skipped"
         print(
             f"[STEMS] Ep{ep:3d}: reward={ep_reward:8.2f}  "
-            f"viol={viol_rate:.3f}  eval_cost={eval_cost:.1f}  "
+            f"viol={viol_rate:.3f}  eval_cost={eval_text}  "
             f"({duration:.1f}s){star}"
         )
 
@@ -413,6 +477,8 @@ def train(args: argparse.Namespace) -> None:
     # If we tracked a best checkpoint, report it
     if best_cost < float("inf"):
         print(f"[STEMS] Best checkpoint (ep {best_ep}, eval_cost={best_cost:.1f}) saved to {best_dir}")
+    elif os.path.isdir(best_dir):
+        print(f"[STEMS] Latest checkpoint (ep {best_ep}, no training-time eval) saved to {best_dir}")
 
     # Save training history
     history_path = os.path.join(args.save_dir, "training_history.json")

@@ -97,7 +97,7 @@ class LagrangianConfig:
     cost_limit: float = 0.05           # max allowed violation rate (5 % of steps)
     lambda_lr: float = 0.005           # Lagrangian multiplier learning rate (stable dual)
     lambda_init: float = 0.1           # initial λ value — non-zero so constraints respected early
-    lambda_max: float = 1.0            # cap on λ; 0.05 was too small to penalize violations
+    lambda_max: float = 10.0           # cap on λ; scaled up so constraint penalty can compete with actor loss
 
 
 @dataclass

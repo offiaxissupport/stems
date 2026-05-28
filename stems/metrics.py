@@ -187,7 +187,9 @@ class MetricsCalculator:
         avoidable_soc = soc_violations & ~unavoidable_soc  # policy could have prevented
 
         power_violations = np.abs(net) > self.cbf.P_building_max                # (T, B)
-        grid_total = net.sum(axis=1, keepdims=True)                             # (T, 1)
+        # Paper Eq 18 constrains total grid imports, not raw net load where
+        # exports can cancel imports from other buildings.
+        grid_total = np.maximum(net, 0.0).sum(axis=1, keepdims=True)             # (T, 1)
         grid_violations = np.broadcast_to(
             grid_total > self.cbf.P_grid_max, (T, B)
         )                                                                        # (T, B)

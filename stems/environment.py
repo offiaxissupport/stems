@@ -5,8 +5,8 @@ Tries to import the real CityLearn environment.  If unavailable (e.g. in a
 CI/CD environment without the CityLearn package), a realistic mock is used so
 that the rest of the codebase can be exercised without modification.
 
-Mock specification (matching CityLearn 2023 Phase-2 schema):
-    Buildings  : 3
+Mock specification (matching the paper-scale Travis setup):
+    Buildings  : 8
     obs_dim    : 28  (see OBS_NAMES below)
     action_dim : 3   (dhw_storage, electrical_storage, cooling_device)
     Episode    : 720 timesteps (≈ 1 month at hourly resolution)
@@ -15,6 +15,7 @@ Mock specification (matching CityLearn 2023 Phase-2 schema):
 from __future__ import annotations
 
 import warnings
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -279,7 +280,8 @@ class STEMSEnvironment:
         Random seed for the mock environment.
     """
 
-    SCHEMA = "citylearn_challenge_2023_phase_2_local_evaluation"
+    SCHEMA = "citylearn_schemas/tx_travis_8b/schema.json"
+    LEGACY_2023_SCHEMA = "citylearn_challenge_2023_phase_2_local_evaluation"
 
     # Fallback local schema paths (CityLearn source checkout)
     _LOCAL_DATA_PATHS = [
@@ -289,7 +291,8 @@ class STEMSEnvironment:
     def __init__(self, schema: Optional[str] = None, seed: int = 0,
                  force_mock: bool = False) -> None:
         self._seed = seed
-        self._schema = schema or self.SCHEMA
+        requested_schema = schema or self.SCHEMA
+        self._schema = self._resolve_schema(requested_schema)
         self._comm_dropout: float = 0.0
         self._temp_offset: float = 0.0   # outdoor temperature offset for extreme weather
 
@@ -303,7 +306,7 @@ class STEMSEnvironment:
                 self._mock = True
                 import os
                 for base in self._LOCAL_DATA_PATHS:
-                    local = os.path.join(base, self._schema, "schema.json")
+                    local = os.path.join(base, requested_schema, "schema.json")
                     if os.path.isfile(local):
                         try:
                             self._env = CityLearnEnv(schema=local, central_agent=False)
@@ -321,6 +324,27 @@ class STEMSEnvironment:
         self._num_buildings: int = len(self._env.observation_space)
         self._action_dim: int = self._env.action_space[0].shape[0]
         self._obs_dim: int = OBS_DIM  # always expose the 28-dim subset downstream
+
+        if not self._mock:
+            action_dims = [space.shape[0] for space in self._env.action_space]
+            if len(set(action_dims)) != 1:
+                raise RuntimeError(
+                    "STEMS requires a homogeneous CityLearn action space; "
+                    f"got per-building action dimensions {action_dims}. "
+                    "Run `python -B setup_citylearn_8b.py --validate` and use the generated Travis 8-building schema."
+                )
+
+        if self._mock:
+            self._action_names = ["dhw_storage", "electrical_storage", "cooling_device"][:self._action_dim]
+        else:
+            raw_action_names = getattr(self._env, "action_names", None)
+            if raw_action_names and len(raw_action_names) > 0:
+                self._action_names = list(raw_action_names[0])
+            else:
+                self._action_names = [f"action_{i}" for i in range(self._action_dim)]
+        self._electrical_storage_action_index = self._find_action_index(
+            "electrical_storage", fallback=min(1, self._action_dim - 1)
+        )
 
         if self._mock:
             self._obs_indices: Optional[List[Optional[int]]] = None
@@ -351,6 +375,14 @@ class STEMSEnvironment:
     @property
     def using_mock(self) -> bool:
         return self._mock
+
+    @property
+    def action_names(self) -> List[str]:
+        return list(self._action_names)
+
+    @property
+    def electrical_storage_action_index(self) -> int:
+        return self._electrical_storage_action_index
 
     # ------------------------------------------------------------------
     # Comm disruption
@@ -417,6 +449,25 @@ class STEMSEnvironment:
     # Private helpers
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _resolve_schema(schema: str) -> str:
+        schema_path = Path(schema)
+        if schema_path.is_file():
+            return str(schema_path)
+
+        repo_root = Path(__file__).resolve().parents[1]
+        local_schema = repo_root / schema
+        if local_schema.is_file():
+            return str(local_schema)
+
+        return schema
+
+    def _find_action_index(self, action_name: str, fallback: int) -> int:
+        try:
+            return self._action_names.index(action_name)
+        except ValueError:
+            return max(0, min(int(fallback), self._action_dim - 1))
+
     def _extract_obs(self, raw_obs_list: List[np.ndarray]) -> List[np.ndarray]:
         """Extract the 28-dim OBS_NAMES subset from raw CityLearn observations.
 
@@ -460,24 +511,22 @@ class STEMSEnvironment:
         return result
 
     def _remap_actions(self, actions: np.ndarray) -> List[np.ndarray]:
-        """Build per-building action list, remapping cooling_device for CityLearn.
-
-        For the real CityLearn environment the ``cooling_device`` action (index 2)
-        must be in [0, 1] (0 = no cooling, 1 = full cooling), but the agent
-        produces values in [-1, 1].  We apply the affine map
-        ``(a + 1) / 2`` to bring it into the required range.
-
-        The mock environment already accepts [-1, 1] for all dimensions, so no
-        remapping is performed there.
-        """
+        """Build per-building action list in each CityLearn action range."""
         if self._mock:
             return [actions[i] for i in range(self._num_buildings)]
         action_list: List[np.ndarray] = []
         for i in range(self._num_buildings):
             a = actions[i].copy()
-            # cooling_device is action index 2; remap [-1, 1] -> [0, 1]
-            if len(a) > 2:
-                a[2] = np.clip((a[2] + 1.0) / 2.0, 0.0, 1.0)
+            space = self._env.action_space[i]
+            low = np.asarray(space.low, dtype=np.float32)
+            high = np.asarray(space.high, dtype=np.float32)
+            for j in range(len(a)):
+                lo = float(low[j]) if low.ndim > 0 else float(low)
+                hi = float(high[j]) if high.ndim > 0 else float(high)
+                if lo >= 0.0 and hi <= 1.0:
+                    a[j] = lo + (np.clip(a[j], -1.0, 1.0) + 1.0) * 0.5 * (hi - lo)
+                else:
+                    a[j] = np.clip(a[j], lo, hi)
             action_list.append(a)
         return action_list
 

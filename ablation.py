@@ -17,8 +17,11 @@ from __future__ import annotations
 
 import argparse
 import copy
+import json
 import os
-from typing import Any, Dict, List, Optional
+import subprocess
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -45,8 +48,16 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--episodes", type=int, default=15,
                    help="Training episodes per ablated variant (default 15, same as main training)")
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--schema", type=str, default=None,
+                   help="CityLearn schema name or path")
     p.add_argument("--checkpoint", type=str, default="checkpoints/seed1/best/",
                    help="Pre-trained Full STEMS checkpoint; ablated variants train from scratch")
+    p.add_argument("--seeds", type=int, nargs="+", default=None,
+                   help="Seeds for fair mean±std ablation aggregation")
+    p.add_argument("--fair", action="store_true",
+                   help="Train every variant from scratch with the same episode budget")
+    p.add_argument("--paper-reproduction", action="store_true",
+                   help="Strict paper ablation protocol: real CityLearn, 5 seeds, fair training")
     p.add_argument(
         "--strict-paper-mode",
         action="store_true",
@@ -63,6 +74,24 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     return p.parse_args()
+
+
+PAPER_SEEDS = [0, 1, 2, 3, 4]
+
+
+def configure_protocol_args(args: argparse.Namespace) -> argparse.Namespace:
+    """Apply ablation protocol defaults."""
+    if args.paper_reproduction:
+        args.strict_paper_mode = True
+        args.fair = True
+        args.load_full_checkpoint = False
+        if args.seeds is None:
+            args.seeds = PAPER_SEEDS.copy()
+    elif args.fair:
+        args.load_full_checkpoint = False
+        if args.seeds is None:
+            args.seeds = [args.seed]
+    return args
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +208,7 @@ def _make_base_agent(
         building_graph=graph,
         config=config,
         use_cbf=use_cbf,
+        electrical_storage_action_index=env.electrical_storage_action_index,
     )
     if encoder_override is not None:
         agent.encoder = encoder_override.to(agent.device)
@@ -339,6 +369,108 @@ def print_table4(results: Dict[str, Dict[str, float]]) -> None:
     print("=" * len(header))
     print(header)
     print(sep)
+
+
+def _format_stat(mean: float, std: float) -> str:
+    return f"{mean:.3f}±{std:.3f}"
+
+
+def print_table4_stats(
+    means: Dict[str, Dict[str, float]],
+    stds: Dict[str, Dict[str, float]],
+) -> None:
+    """Print mean±std Table IV for fair multi-seed ablations."""
+    header = (
+        f"  {'Variant':<22s} | "
+        f"{'Cost':>13} | "
+        f"{'Emiss':>13} | "
+        f"{'DayPk':>13} | "
+        f"{'Consm':>13} | "
+        f"{'Ramp':>13} | "
+        f"{'Discom':>13} | "
+        f"{'SafVio':>13}"
+    )
+    sep = "-" * len(header)
+    print("\n" + "=" * len(header))
+    print("  TABLE IV – Fair Ablation Study (mean±std across seeds)")
+    print("=" * len(header))
+    print(header)
+    print(sep)
+    for name, m in means.items():
+        sd = stds.get(name, {})
+        row = (
+            f"  {name:<22s} | "
+            f"{_format_stat(m.get('cost', 0), sd.get('cost', 0)):>13} | "
+            f"{_format_stat(m.get('emission', 0), sd.get('emission', 0)):>13} | "
+            f"{_format_stat(m.get('avg_daily_peak', 0), sd.get('avg_daily_peak', 0)):>13} | "
+            f"{_format_stat(m.get('electricity_consumption', 0), sd.get('electricity_consumption', 0)):>13} | "
+            f"{_format_stat(m.get('ramping_rate', 0), sd.get('ramping_rate', 0)):>13} | "
+            f"{_format_stat(m.get('discomfort_rate', 0), sd.get('discomfort_rate', 0)):>13} | "
+            f"{_format_stat(m.get('safety_violation_rate', 0), sd.get('safety_violation_rate', 0)):>13}"
+        )
+        print(row)
+    print(sep)
+
+
+def _aggregate_variant_results(
+    results_per_seed: List[Dict[str, Dict[str, float]]],
+) -> Tuple[Dict[str, Dict[str, float]], Dict[str, Dict[str, float]]]:
+    """Return mean/std dictionaries for per-seed ablation results."""
+    variants = list(results_per_seed[0].keys())
+    metrics = list(results_per_seed[0][variants[0]].keys())
+    means: Dict[str, Dict[str, float]] = {}
+    stds: Dict[str, Dict[str, float]] = {}
+    for variant in variants:
+        means[variant] = {}
+        stds[variant] = {}
+        for metric in metrics:
+            vals = [r[variant].get(metric, 0.0) for r in results_per_seed]
+            means[variant][metric] = float(np.mean(vals))
+            stds[variant][metric] = float(np.std(vals, ddof=1)) if len(vals) > 1 else 0.0
+    return means, stds
+
+
+def _git_commit() -> str:
+    try:
+        root = os.path.dirname(os.path.abspath(__file__))
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=root, text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except Exception:
+        return "unknown"
+
+
+def _write_ablation_manifest(
+    args: argparse.Namespace,
+    env: STEMSEnvironment,
+    output_dir: str,
+    result_file: str,
+) -> None:
+    manifest = {
+        "created_at_utc": datetime.now(timezone.utc).isoformat(),
+        "checkpoint": args.checkpoint,
+        "schema": args.schema or env.SCHEMA,
+        "environment": "mock" if env.using_mock else "CityLearn",
+        "using_mock": env.using_mock,
+        "num_buildings": env.num_buildings,
+        "obs_dim": env.obs_dim,
+        "action_dim": env.action_dim,
+        "seed": args.seed,
+        "seeds": args.seeds,
+        "episodes": args.episodes,
+        "fair": args.fair,
+        "load_full_checkpoint": args.load_full_checkpoint,
+        "strict_paper_mode": args.strict_paper_mode,
+        "paper_reproduction": args.paper_reproduction,
+        "result_file": result_file,
+        "git_commit": _git_commit(),
+    }
+    os.makedirs(output_dir, exist_ok=True)
+    manifest_path = os.path.join(output_dir, "ablation_manifest.json")
+    with open(manifest_path, "w") as f:
+        json.dump(manifest, f, indent=2)
+    print(f"[ablation] Manifest saved to {manifest_path}")
     for name, m in results.items():
         row = (
             f"  {name:<22s} | "
@@ -358,14 +490,15 @@ def print_table4(results: Dict[str, Dict[str, float]]) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
-def main(args: argparse.Namespace) -> None:
-    set_seed(args.seed)
+def run_ablation_once(args: argparse.Namespace, seed: int) -> Tuple[Dict[str, Dict[str, float]], STEMSEnvironment]:
+    """Run one full ablation pass for a single seed."""
+    set_seed(seed)
     config = STEMSConfig()
 
     print(f"[ablation] Building environment ...")
-    env = STEMSEnvironment(seed=args.seed)
+    env = STEMSEnvironment(schema=args.schema, seed=seed)
     if args.strict_paper_mode:
-        validate_strict_paper_mode(env, context="ablation")
+        validate_strict_paper_mode(env, context=f"ablation seed {seed}")
         print("[ablation] Strict paper mode enabled")
     print(f"[ablation] Buildings: {env.num_buildings}, obs_dim: {env.obs_dim}")
 
@@ -374,13 +507,14 @@ def main(args: argparse.Namespace) -> None:
 
     results: Dict[str, Dict[str, float]] = {}
     for name, agent in variants.items():
-        variant_env = STEMSEnvironment(seed=args.seed)
+        variant_env = STEMSEnvironment(schema=args.schema, seed=seed)
         if args.strict_paper_mode:
-            validate_strict_paper_mode(variant_env, context=f"ablation variant {name}")
+            validate_strict_paper_mode(variant_env, context=f"ablation seed {seed} variant {name}")
 
         if (
             name == "Full STEMS"
             and args.load_full_checkpoint
+            and not args.fair
             and os.path.isdir(args.checkpoint)
             and os.path.exists(os.path.join(args.checkpoint, "encoder.pt"))
         ):
@@ -397,15 +531,55 @@ def main(args: argparse.Namespace) -> None:
               f"discomfort={metrics['discomfort_rate']:.4f}  "
               f"safety_viol={metrics['safety_violation_rate']:.4f}")
 
+    return results, env
+
+
+def main(args: argparse.Namespace) -> None:
+    args = configure_protocol_args(args)
+
+    if args.seeds:
+        per_seed_results: List[Dict[str, Dict[str, float]]] = []
+        manifest_env: Optional[STEMSEnvironment] = None
+        for seed in args.seeds:
+            print(f"\n[ablation] === Seed {seed} ===")
+            results, env = run_ablation_once(args, seed)
+            per_seed_results.append(results)
+            if manifest_env is None:
+                manifest_env = env
+
+        means, stds = _aggregate_variant_results(per_seed_results)
+        print_table4_stats(means, stds)
+
+        out_path = os.path.join(args.checkpoint, "ablation_multiseed_results.json")
+        os.makedirs(args.checkpoint, exist_ok=True)
+        with open(out_path, "w") as f:
+            json.dump(
+                {
+                    "means": {k: {mk: round(mv, 4) for mk, mv in v.items()} for k, v in means.items()},
+                    "stds": {k: {mk: round(mv, 4) for mk, mv in v.items()} for k, v in stds.items()},
+                    "per_seed": per_seed_results,
+                    "seeds": args.seeds,
+                },
+                f,
+                indent=2,
+            )
+        print(f"\n[ablation] Fair multi-seed results saved to {out_path}")
+        if manifest_env is not None:
+            _write_ablation_manifest(args, manifest_env, args.checkpoint, "ablation_multiseed_results.json")
+        print("\n[ablation] Ablation study complete.")
+        return
+
+    results, env = run_ablation_once(args, args.seed)
+
     print_table4(results)
 
     # Save results to JSON for downstream use
-    import json
     out_path = os.path.join(args.checkpoint, "ablation_results.json")
     os.makedirs(args.checkpoint, exist_ok=True)
     with open(out_path, "w") as f:
         json.dump({k: {mk: round(mv, 4) for mk, mv in v.items()} for k, v in results.items()}, f, indent=2)
     print(f"\n[ablation] Results saved to {out_path}")
+    _write_ablation_manifest(args, env, args.checkpoint, "ablation_results.json")
     print("\n[ablation] Ablation study complete.")
 
 

@@ -187,6 +187,7 @@ class STEMSAgent:
         config: Optional[STEMSConfig] = None,
         use_cbf: bool = True,
         device: str = "cpu",
+        electrical_storage_action_index: Optional[int] = None,
     ) -> None:
         self.obs_dim = obs_dim
         self.action_dim = action_dim
@@ -195,6 +196,9 @@ class STEMSAgent:
         self.cfg = config or STEMSConfig()
         self.use_cbf = use_cbf
         self.device = torch.device(device)
+        if electrical_storage_action_index is None:
+            electrical_storage_action_index = 1 if action_dim > 2 else 0
+        self.electrical_storage_action_index = int(electrical_storage_action_index)
 
         # Compute and cache adjacency matrix
         self.adj = self.graph.compute_edge_weights().to(self.device)
@@ -276,6 +280,7 @@ class STEMSAgent:
             config=self.cfg.cbf,
             num_buildings=self.B,
             action_scale=self.cfg.training.action_scale,
+            electrical_storage_action_index=self.electrical_storage_action_index,
         )
 
         # Neural Safety Filter – differentiable replacement for the CBF QP.
@@ -289,6 +294,7 @@ class STEMSAgent:
             dropout_rate=0.1,
             uncertainty_threshold=0.05,
             cbf_config=self.cfg.cbf,
+            electrical_storage_action_index=self.electrical_storage_action_index,
         ).to(self.device)
         self.neural_filter_optimizer = optim.Adam(
             self.neural_filter.parameters(), lr=lr
@@ -740,28 +746,32 @@ class STEMSAgent:
     def load(self, path: str) -> None:
         """Load model weights from *path* (directory)."""
         map_loc = self.device
-        self.encoder.load_state_dict(
-            torch.load(os.path.join(path, "encoder.pt"), map_location=map_loc)
-        )
-        self.actors.load_state_dict(
-            torch.load(os.path.join(path, "actors.pt"), map_location=map_loc)
-        )
-        self.critics.load_state_dict(
-            torch.load(os.path.join(path, "critics.pt"), map_location=map_loc)
-        )
+        def _load_checked(module: nn.Module, filename: str, label: str) -> None:
+            checkpoint_path = os.path.join(path, filename)
+            try:
+                module.load_state_dict(torch.load(checkpoint_path, map_location=map_loc))
+            except RuntimeError as exc:
+                raise RuntimeError(
+                    f"Checkpoint {path!r} is incompatible with the current STEMSAgent "
+                    f"(buildings={self.B}, obs_dim={self.obs_dim}, action_dim={self.action_dim}). "
+                    "This usually means the checkpoint was trained with an older mock/3-building setup "
+                    "or a previous network definition. Re-run training with the current schema, or pass a "
+                    "checkpoint directory that matches this environment. "
+                    f"Failed while loading {label} from {filename}."
+                ) from None
+
+        _load_checked(self.encoder, "encoder.pt", "encoder")
+        _load_checked(self.actors, "actors.pt", "actors")
+        _load_checked(self.critics, "critics.pt", "critics")
         target_critics_path = os.path.join(path, "target_critics.pt")
         if os.path.exists(target_critics_path):
-            self.target_critics.load_state_dict(
-                torch.load(target_critics_path, map_location=map_loc)
-            )
+            _load_checked(self.target_critics, "target_critics.pt", "target critics")
         else:
             # Fallback: initialise target from live critics if no saved target exists
             self.target_critics.load_state_dict(self.critics.state_dict())
         cost_critics_path = os.path.join(path, "cost_critics.pt")
         if os.path.exists(cost_critics_path):
-            self.cost_critics.load_state_dict(
-                torch.load(cost_critics_path, map_location=map_loc)
-            )
+            _load_checked(self.cost_critics, "cost_critics.pt", "cost critics")
         lambdas_path = os.path.join(path, "lambdas.pt")
         if os.path.exists(lambdas_path):
             d = torch.load(lambdas_path, map_location=map_loc)
@@ -779,9 +789,7 @@ class STEMSAgent:
             )
         nf_path = os.path.join(path, "neural_filter.pt")
         if os.path.exists(nf_path):
-            self.neural_filter.load_state_dict(
-                torch.load(nf_path, map_location=map_loc)
-            )
+            _load_checked(self.neural_filter, "neural_filter.pt", "neural safety filter")
             # Do NOT auto-enable use_neural_filter here.  The file is saved
             # unconditionally so its mere existence does not mean it was trained.
             # Callers must explicitly set agent.use_neural_filter = True after

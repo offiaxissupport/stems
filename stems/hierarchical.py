@@ -507,6 +507,7 @@ class HierarchicalSTEMSAgent:
         lagrangian_cfg: Optional[LagrangianConfig] = None,
         use_cbf: bool = True,
         device: str = "cpu",
+        electrical_storage_action_index: Optional[int] = None,
     ) -> None:
         self.B            = num_buildings
         self.obs_dim      = obs_dim
@@ -515,8 +516,24 @@ class HierarchicalSTEMSAgent:
         self.tau          = tau
         self.use_cbf      = use_cbf
         self.device       = torch.device(device)
+        if electrical_storage_action_index is None:
+            electrical_storage_action_index = 1 if action_dim > 2 else 0
+        self.electrical_storage_action_index = int(electrical_storage_action_index)
 
-        cbf_cfg       = cbf_config     or CBFConfig()
+        if cbf_config is not None:
+            cbf_cfg = cbf_config
+        else:
+            # Scale P_grid_max linearly with num_buildings.
+            # The default 300 kW is calibrated for the 3-building CityLearn env
+            # (~100 kW headroom per building).  For B buildings we keep that ratio.
+            _base = CBFConfig()
+            cbf_cfg = CBFConfig(
+                SOC_min=_base.SOC_min,
+                SOC_max=_base.SOC_max,
+                P_building_max=_base.P_building_max,
+                P_grid_max=_base.P_grid_max * num_buildings / 3.0,
+                gamma_cbf=_base.gamma_cbf,
+            )
         lag_cfg       = lagrangian_cfg or LagrangianConfig()
         self._lag_cfg = lag_cfg
         self._cbf_cfg = cbf_cfg
@@ -598,7 +615,11 @@ class HierarchicalSTEMSAgent:
 
         # ---- Safety shield ----
         if use_cbf:
-            self.cbf = CBFShield(cbf_cfg, num_buildings)
+            self.cbf = CBFShield(
+                cbf_cfg,
+                num_buildings,
+                electrical_storage_action_index=self.electrical_storage_action_index,
+            )
         else:
             self.cbf = None
 
@@ -893,6 +914,9 @@ class HierarchicalSTEMSAgent:
         self.lambda_opt.zero_grad()
         lambda_loss.backward()
         self.lambda_opt.step()
+        # Clamp log_lambdas so exp(log_lambda) stays within [0, lambda_max]
+        log_max = math.log(self._lag_cfg.lambda_max)
+        self.log_lambdas.data.clamp_(min=-10.0, max=log_max)
         losses["lambda_loss"] = lambda_loss.item()
 
         # Normalise per building
