@@ -1,0 +1,226 @@
+{
+  "meta": {
+    "scenario": {
+      "schema": "citylearn_schemas/tx_travis_8b_ev/schema.json",
+      "season": "winter",
+      "subset_seed": null,
+      "n_buildings": 8,
+      "days": 14,
+      "grid_cap_kw": 40.0,
+      "building_cap_kw": 80.0,
+      "hvac_control": "setpoint",
+      "key": "tx_travis_8b_ev__winter14d__refn8__cap40-80",
+      "buildings": [
+        "resstock-amy2018-2021-release-1-134795",
+        "resstock-amy2018-2021-release-1-15942",
+        "resstock-amy2018-2021-release-1-344233",
+        "resstock-amy2018-2021-release-1-400973",
+        "resstock-amy2018-2021-release-1-412815",
+        "resstock-amy2018-2021-release-1-427553",
+        "resstock-amy2018-2021-release-1-494842",
+        "resstock-amy2018-2021-release-1-519975"
+      ],
+      "train_window": [
+        0,
+        335
+      ],
+      "eval_window": [
+        336,
+        671
+      ]
+    },
+    "arm": {
+      "name": "rbc",
+      "policy": "rbc",
+      "barrier": "none",
+      "residual": false,
+      "penalty": 0.0
+    },
+    "seed": 0,
+    "episodes": 0,
+    "learner": {},
+    "code": {
+      "git": "2a08bfb-dirty",
+      "fingerprint": "52711521326e4e9a",
+      "files": 27,
+      "citylearn": "2.6.0b1"
+    },
+    "started": "2026-10-04 21:11:00",
+    "eval_calibration": {
+      "soc_rate": [
+        0.2666666805744171,
+        0.24393939971923828,
+        0.5,
+        0.5154639482498169,
+        0.24444444477558136,
+        0.5333333611488342,
+        0.17777778208255768,
+        0.20749999582767487
+      ],
+      "dhw_capacity_kwh": [
+        6.757101058959961,
+        7.282660484313965,
+        7.589635372161865,
+        10.1600980758667,
+        6.560161113739014,
+        11.174981117248535,
+        10.989421844482422,
+        11.200160026550293
+      ]
+    },
+    "citylearn_patches": [
+      "dhw_storage_capacity",
+      "t0_thermal_double_count",
+      "endogenous_obs_from_simulated_hour"
+    ],
+    "buildings_simulated": [
+      "resstock-amy2018-2021-release-1-134795",
+      "resstock-amy2018-2021-release-1-15942",
+      "resstock-amy2018-2021-release-1-344233",
+      "resstock-amy2018-2021-release-1-400973",
+      "resstock-amy2018-2021-release-1-412815",
+      "resstock-amy2018-2021-release-1-427553",
+      "resstock-amy2018-2021-release-1-494842",
+      "resstock-amy2018-2021-release-1-519975"
+    ],
+    "config": {
+      "cbf": {
+        "SOC_min": 0.1,
+        "SOC_max": 0.9,
+        "P_grid_max": 40.0,
+        "P_building_max": 80.0,
+        "gamma_cbf": 1.0
+      },
+      "safety": {
+        "feasibility_qp": true,
+        "anticipatory": false,
+        "invariance_horizon": 1,
+        "robust_margins": false,
+        "soc_margin": 0.03,
+        "soc_tolerance": 0.001,
+        "power_derate": 0.05
+      },
+      "thermal": {
+        "dhw_readiness": true,
+        "preheat_horizon": 2,
+        "dhw_margin": 0.05,
+        "dhw_soc_cap": 0.95,
+        "forecast_alpha": 0.2,
+        "forecast_warmup": 24,
+        "forecast_temp_gain": 0.02,
+        "weather_anticipation": true,
+        "weather_gain": 0.15,
+        "weather_horizon": 3,
+        "cop_aware_power": true
+      },
+      "training": {
+        "episodes": 50,
+        "batch_size": 512,
+        "buffer_capacity": 100000,
+        "exploration_noise": 0.1,
+        "action_scale": 1.0,
+        "update_epochs": 10,
+        "minibatch_size": 64,
+        "ppo_clip": 0.2,
+        "gae_lambda": 0.95,
+        "value_coef": 0.5,
+        "max_grad_norm": 0.5,
+        "target_kl": 0.02,
+        "entropy_coef": 0.01,
+        "scale_rewards": true,
+        "actor_target": "raw",
+        "residual_scale": 0.5,
+        "residual_log_std": -1.2,
+        "intervention_penalty": 0.0
+      },
+      "lagrangian": {
+        "num_constraints": 3,
+        "cost_limit": 0.05,
+        "lambda_init": 0.1,
+        "lambda_max": 10.0,
+        "lambda_lr": 0.005,
+        "use_pid": true,
+        "pid_kp": 1.0,
+        "pid_ki": 0.3,
+        "pid_kd": 0.0
+      },
+      "reward": {
+        "mu": 1.0,
+        "alpha_grid": 0.5,
+        "alpha_build": 0.3,
+        "beta_ramp": 0.2,
+        "lambda_indoor": 0.4,
+        "xi": 0.0,
+        "T_ref": 22.0,
+        "T_comfort_threshold": 2.0,
+        "ev_service": 25.0,
+        "ev_shaping": 0.5
+      },
+      "actor_critic": {
+        "hidden_dim": 128,
+        "lr": 0.0003,
+        "gamma": 0.99,
+        "share_parameters": true
+      }
+    }
+  },
+  "status": "ok",
+  "eval": {
+    "cost": 1892.139404296875,
+    "emission": 1174.3389892578125,
+    "avg_daily_peak": 53.00750241960798,
+    "electricity_consumption": 6271.41162109375,
+    "ramping_rate": 9.752689361572266,
+    "discomfort_rate": 0.020967741935483872,
+    "safety_violation_rate": 0.3813432835820896,
+    "soc_violation_rate": 0.29328358208955224,
+    "power_violation_rate": 0.0,
+    "grid_violation_rate": 0.10149253731343283,
+    "avoidable_violation_rate": 0.3813432835820896,
+    "unavoidable_violation_rate": 0.0,
+    "peak_import_kw": 85.25982666015625,
+    "load_factor": 0.21957155305652457,
+    "cap_exceedance_kwh": 402.7913818359375,
+    "pv_self_consumption": 0.6840606038458072,
+    "self_sufficiency": 0.24982241190392196,
+    "discomfort_degree_hours": 5.839710712432861,
+    "battery_equivalent_full_cycles": 7.181182861328125,
+    "hvac_on_transitions_per_building_day": 1.7641791044776118,
+    "barrier_intervention_rate": 0.0,
+    "barrier_intervention_magnitude": 0.0,
+    "cost_cv_across_buildings": 0.24943965976628737,
+    "discomfort_rate_worst_building": 0.07878787878787878,
+    "ev_departures": 67.0,
+    "ev_missed_departures": 1.0,
+    "ev_missed_departure_rate": 0.014925373134328358,
+    "ev_energy_shortfall_kwh": 0.11375633239745886
+  },
+  "actuators": {
+    "verified": true,
+    "battery": {
+      "n_charge": 437,
+      "n_rest": 2008,
+      "contrast": 0.161688894033432,
+      "responds": true
+    },
+    "dhw": {
+      "n_charge": 171,
+      "n_rest": 2008,
+      "contrast": 0.230618417263031,
+      "responds": true
+    },
+    "hvac": {
+      "heating": {
+        "correlation": 0.8632668374333797,
+        "responds": true
+      },
+      "cooling": {
+        "correlation": 0.72347073883418,
+        "responds": true
+      },
+      "responds": true
+    }
+  },
+  "eval_steps": 335,
+  "seconds": 42.6
+}

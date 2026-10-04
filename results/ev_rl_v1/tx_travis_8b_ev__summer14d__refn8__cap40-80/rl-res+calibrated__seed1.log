@@ -1,0 +1,24 @@
+22:19:55 train tx_travis_8b_ev__summer14d__refn8__cap40-80 arm=rl-res+calibrated seed=1 episodes=60
+22:20:08 ep 44/60 reward=-281.4 violating_steps=0.006 grad_steps=60 (58.5s)
+22:20:54 ep 45/60 reward=-281.8 violating_steps=0.006 grad_steps=29 (46.6s)
+22:20:59 ep 1/60 reward=-331.0 violating_steps=0.012 grad_steps=0 (39.2s)
+22:21:27 ep 46/60 reward=-282.8 violating_steps=0.009 grad_steps=21 (32.1s)
+22:21:36 ep 2/60 reward=-329.8 violating_steps=0.009 grad_steps=60 (37.0s)
+22:21:52 ep 47/60 reward=-282.5 violating_steps=0.003 grad_steps=30 (25.1s)
+22:22:07 ep 3/60 reward=-329.9 violating_steps=0.006 grad_steps=60 (31.1s)
+22:22:20 ep 48/60 reward=-280.4 violating_steps=0.006 grad_steps=44 (27.9s)
+22:22:41 ep 49/60 reward=-280.0 violating_steps=0.006 grad_steps=32 (21.2s)
+22:22:55 ep 50/60 reward=-278.8 violating_steps=0.009 grad_steps=5 (14.6s)
+22:23:11 ep 51/60 reward=-279.8 violating_steps=0.003 grad_steps=8 (16.0s)
+22:23:29 ep 52/60 reward=-276.8 violating_steps=0.003 grad_steps=31 (17.2s)
+22:23:46 ep 53/60 reward=-276.2 violating_steps=0.003 grad_steps=19 (17.5s)
+22:24:04 ep 54/60 reward=-276.1 violating_steps=0.003 grad_steps=17 (17.7s)
+22:24:22 ep 55/60 reward=-270.4 violating_steps=0.000 grad_steps=19 (18.7s)
+22:24:51 ep 56/60 reward=-274.0 violating_steps=0.000 grad_steps=31 (28.6s)
+22:25:32 ep 57/60 reward=-273.2 violating_steps=0.006 grad_steps=44 (40.6s)
+22:26:23 ep 58/60 reward=-271.8 violating_steps=0.003 grad_steps=54 (51.6s)
+22:27:08 ep 59/60 reward=-268.4 violating_steps=0.006 grad_steps=43 (44.7s)
+22:27:26 ep 60/60 reward=-271.4 violating_steps=0.009 grad_steps=47 (18.3s)
+22:27:26 evaluate
+22:27:42 warm-up: load forecast on the training window
+22:29:08 done verified=True violation=0.0090 cost=1393.0
