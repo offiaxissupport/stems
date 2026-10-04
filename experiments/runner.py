@@ -93,7 +93,7 @@ def make_config(scenario, learner: Optional[Dict[str, Any]] = None):
     config = STEMSConfig()
     config.cbf = CBFConfig(P_grid_max=scenario.grid_cap_kw,
                            P_building_max=scenario.building_cap_kw)
-    config.heat_pump.enabled = True
+    config.heat_pump.enabled = bool(getattr(scenario, "heat_pump", True))
     config.actor_critic.share_parameters = bool((learner or {}).get("share_parameters", False))
     return config
 
@@ -389,12 +389,23 @@ def run_one(spec: Dict[str, Any]) -> Dict[str, Any]:
         train_kw, eval_kw = scenario.env_kwargs("train"), scenario.env_kwargs("eval")
         model_dir: Optional[Path] = None
 
+        def make_env(kwargs):
+            return STEMSEnvironment(schema=schema, seed=seed, heat_pump=scenario.heat_pump,
+                                    env_kwargs=kwargs, hvac_control=scenario.hvac_control,
+                                    allow_missing_obs=scenario.allow_missing_obs)
+
+        def fit_config(cfg, env):
+            # Without a heat-pump action the indoor temperature is not the
+            # controller's to move: a comfort term would be a constant offset
+            # on the reward, computed from set points the dataset does not have.
+            if env.hvac_action_index < 0:
+                cfg.reward.lambda_indoor = 0.0
+            return cfg
+
         if arm.learns:
             log(f"train {scenario.key} arm={arm.name} seed={seed} episodes={episodes}")
-            train_env = STEMSEnvironment(schema=schema, seed=seed, heat_pump=True,
-                                         env_kwargs=train_kw,
-                                         hvac_control=scenario.hvac_control)
-            train_config = make_config(scenario, learner)
+            train_env = make_env(train_kw)
+            train_config = fit_config(make_config(scenario, learner), train_env)
             agent = build_controller(arm, train_env, train_config)
             record["train"] = train(agent, train_env, train_config, episodes, log,
                                     _window_len(train_kw))
@@ -407,10 +418,8 @@ def run_one(spec: Dict[str, Any]) -> Dict[str, Any]:
             del agent, train_env
 
         log("evaluate")
-        eval_env = STEMSEnvironment(schema=schema, seed=seed, heat_pump=True,
-                                    env_kwargs=eval_kw,
-                                    hvac_control=scenario.hvac_control)
-        config = make_config(scenario, learner)
+        eval_env = make_env(eval_kw)
+        config = fit_config(make_config(scenario, learner), eval_env)
         controller = build_controller(arm, eval_env, config)
         if model_dir is not None:
             controller.load(str(model_dir))
@@ -420,9 +429,7 @@ def run_one(spec: Dict[str, Any]) -> Dict[str, Any]:
             # empty: one pass over the training window (the days just before the
             # evaluation window) gives it what a deployed controller would have.
             log("warm-up: load forecast on the training window")
-            warm_env = STEMSEnvironment(schema=schema, seed=seed, heat_pump=True,
-                                        env_kwargs=train_kw,
-                                        hvac_control=scenario.hvac_control)
+            warm_env = make_env(train_kw)
             warm = evaluate(controller, warm_env, config, _window_len(train_kw))
             record["meta"]["forecast_warmup_steps"] = warm["steps"]
             for inner in (getattr(controller, "base", None),
@@ -438,6 +445,8 @@ def run_one(spec: Dict[str, Any]) -> Dict[str, Any]:
             eval_calibration={"soc_rate": eval_env.battery_info()["soc_rate"],
                               "dhw_capacity_kwh": eval_env.dhw_info()["capacity"]},
             citylearn_patches=eval_env.citylearn_patches,
+            absent_observations=([] if eval_env.using_mock
+                                 else list(eval_env.absent_observations)),
             buildings_simulated=([b.name for b in eval_env._env.buildings]
                                  if not eval_env.using_mock else None),
             config={k: asdict(getattr(config, k))

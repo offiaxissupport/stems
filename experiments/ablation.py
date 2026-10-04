@@ -68,6 +68,8 @@ def build_grid(args) -> List[Dict[str, Any]]:
                                 subset_seed=None if subset == "ref" else int(subset),
                                 n_buildings=args.buildings, days=args.days,
                                 hvac_control=args.hvac_control,
+                                heat_pump=not args.no_heat_pump,
+                                allow_missing_obs=args.allow_missing_obs,
                                 grid_cap_kw=args.grid_cap,
                                 building_cap_kw=args.building_cap)
             for arm_name in args.arms:
@@ -119,6 +121,11 @@ def main() -> None:
                          "shield to every shielded arm")
     ap.add_argument("--hvac-control", choices=["setpoint", "power"], default="setpoint",
                     help="HVAC action semantics: set-point offset (default) or power fraction")
+    ap.add_argument("--no-heat-pump", action="store_true",
+                    help="the schema has no heat pump the controller drives "
+                         "(datasets without thermal dynamics)")
+    ap.add_argument("--allow-missing-obs", action="store_true",
+                    help="zero-fill observations the dataset does not have")
     ap.add_argument("--per-building-actors", action="store_true",
                     help="one actor/critic per building (the paper's layout) instead of one "
                          "shared by all buildings")

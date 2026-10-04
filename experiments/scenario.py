@@ -173,6 +173,13 @@ class Scenario:
     # environment's thermostat; "power": the action is the power fraction
     # (the paper's formulation). See stems/environment.py.
     hvac_control: str = "setpoint"
+    # Whether the buildings have a heat pump the controller drives (heating
+    # observations, set points). False for datasets without thermal dynamics,
+    # where the indoor temperature is not the controller's to move.
+    heat_pump: bool = True
+    # Zero-fill observations the dataset does not have (recorded in the run as
+    # ``absent_observations``) instead of refusing the schema.
+    allow_missing_obs: bool = False
 
     @property
     def buildings(self) -> Optional[List[str]]:

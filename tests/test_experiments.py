@@ -325,6 +325,33 @@ def test_charger_floor_holds_the_request_up_and_touches_nothing_else():
         ChargerFloor(4, 3, layout, fraction=0.0)
 
 
+def test_rule_on_a_schema_without_a_heat_pump_keeps_only_the_devices_it_has():
+    from experiments.controllers import RBC_ACTIONS, RuleColumns
+    from stems.baselines import RuleBasedAgent
+
+    rule = RuleBasedAgent(num_buildings=2, hvac_control="power",
+                          battery_nominal_power=np.array([5.0, 5.0]), has_hvac=False)
+    obs = [np.zeros(28) for _ in range(2)]
+    for o in obs:
+        o[1], o[16] = 12.0, 3.0                     # a charging hour, 3 kW of load
+    full = rule.select_action(obs)
+    assert full.shape == (2, 3) and np.all(full[:, 2] == 0.0)      # no thermostat without a heat pump
+    two = RuleColumns(rule, ["dhw_storage", "electrical_storage"]).select_action(obs)
+    assert two.shape == (2, 2)
+    assert two[0] == pytest.approx([RuleBasedAgent.DHW_CHARGE_ACTION, RuleBasedAgent.CHARGE_ACTION])
+    assert RBC_ACTIONS == ["dhw_storage", "electrical_storage", "cooling_or_heating_device"]
+
+
+def test_scenario_records_what_the_schema_lacks():
+    plain = Scenario()
+    assert plain.heat_pump and not plain.allow_missing_obs
+    mixed = Scenario(schema="citylearn_schemas/cl2020_zone1/schema.json", heat_pump=False,
+                     allow_missing_obs=True, hvac_control="power")
+    d = asdict(mixed)
+    assert d["heat_pump"] is False and d["allow_missing_obs"] is True
+    assert mixed.key.startswith("cl2020_zone1__") and mixed.key.endswith("__power")
+
+
 def test_car_request_modes_of_the_rule():
     from experiments.controllers import EVRule
 

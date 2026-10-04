@@ -105,6 +105,27 @@ ARMS: Dict[str, Arm] = {a.name: a for a in (
 )}
 
 
+class RuleColumns:
+    """The time-of-use rule on a schema that has only some of its three devices.
+
+    ``RuleBasedAgent`` returns (hot-water storage, battery, heat pump); this keeps
+    the columns the environment has, in the environment's order.
+    """
+
+    def __init__(self, rule, names) -> None:
+        self.rule = rule
+        self.columns = [RBC_ACTIONS.index(n) for n in names]
+
+    def reset(self) -> None:
+        self.rule.reset()
+
+    def notify_executed(self, executed: np.ndarray) -> None:
+        return None                      # no heat-pump command to keep in step with
+
+    def select_action(self, obs_list, history=None, explore: bool = False) -> np.ndarray:
+        return self.rule.select_action(obs_list, history, explore)[:, self.columns]
+
+
 class EVRule:
     """A house rule plus "charge the car whenever it is plugged in and short".
 
@@ -289,11 +310,17 @@ def build_controller(arm: Arm, env, config):
     ev_indices = [] if env.using_mock else env.ev_action_indices()
 
     def rule():
-        if list(env.action_names)[:3] != RBC_ACTIONS:
-            raise RuntimeError(f"RuleBasedAgent assumes actions {RBC_ACTIONS}; "
-                               f"this environment has {env.action_names}")
+        names = [n for n in env.action_names if n in RBC_ACTIONS]
+        if "electrical_storage" not in names or names != [n for n in RBC_ACTIONS if n in names]:
+            raise RuntimeError(f"RuleBasedAgent needs a battery and the action order of "
+                               f"{RBC_ACTIONS}; this environment has {env.action_names}")
         house = RuleBasedAgent(num_buildings=B, hvac_control=env.hvac_control,
-                               battery_nominal_power=battery["nominal_power"])
+                               battery_nominal_power=battery["nominal_power"],
+                               has_hvac=env.hvac_action_index >= 0)
+        if names != RBC_ACTIONS:
+            if ev_indices:
+                raise RuntimeError("a schema with chargers needs all three house devices")
+            return RuleColumns(house, names)
         if not ev_indices:
             return house
         return EVRule(house, env.action_dim, ev_indices[0], env.ev_obs_layout()[0],

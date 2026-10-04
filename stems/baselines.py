@@ -78,11 +78,15 @@ class RuleBasedAgent:
     DHW_DISCHARGE_ACTION = -0.5
 
     def __init__(self, num_buildings: int = 3, hvac_control: str = "power",
-                 battery_nominal_power: Optional[np.ndarray] = None) -> None:
+                 battery_nominal_power: Optional[np.ndarray] = None,
+                 has_hvac: bool = True) -> None:
         if hvac_control not in ("power", "setpoint"):
             raise ValueError(f"hvac_control must be 'power' or 'setpoint', got {hvac_control!r}")
         self.B = num_buildings
         self.hvac_control = hvac_control
+        # False where the schema has no heat-pump action: the storage schedule
+        # is all there is, and the thermostat (which needs set points) is skipped.
+        self.has_hvac = bool(has_hvac)
         self.p_batt = (None if battery_nominal_power is None
                        else np.asarray(battery_nominal_power, dtype=np.float32).reshape(-1))
         self.reset()
@@ -98,7 +102,7 @@ class RuleBasedAgent:
             self._u = np.asarray(executed, dtype=np.float32)[:, hvac_idx].copy()
 
     def _hvac_actions(self, obs_list: List[np.ndarray]) -> np.ndarray:
-        if self.hvac_control == "setpoint":
+        if self.hvac_control == "setpoint" or not self.has_hvac:
             return np.zeros(self.B, dtype=np.float32)
         if any(len(o) <= _IDX_T_HEAT for o in obs_list):
             raise ValueError(
