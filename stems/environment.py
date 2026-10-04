@@ -842,6 +842,16 @@ class STEMSEnvironment:
         return BatteryModel.from_citylearn(
             self._env.buildings, float(self._env.seconds_per_time_step))
 
+    def dhw_tank_model(self):
+        """The hot-water tanks and their heaters as a one-step model
+        (``stems.battery.TankModel``): what a storage action draws this hour."""
+        from stems.battery import TankModel
+
+        if self._mock:
+            raise RuntimeError("the mock environment has no hot-water tank model")
+        return TankModel.from_citylearn(self._env.buildings,
+                                        float(self._env.seconds_per_time_step))
+
     # ------------------------------------------------------------------
     # Simulator corrections (applied loudly, recorded in metadata)
     # ------------------------------------------------------------------

@@ -14,9 +14,9 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from stems.battery import BatteryModel
+from stems.battery import BatteryModel, TankModel
 from stems.fleet import (BaseLoadForecaster, EVFleetModel, FleetShield, FleetState,
-                         allocate, apply_dead_band, laxity, schedule)
+                         HouseStorage, allocate, apply_dead_band, laxity, schedule)
 
 EV_SCHEMA = "citylearn_schemas/tx_travis_8b_ev/schema.json"
 
@@ -371,3 +371,178 @@ def test_requirement_holds_at_departure_not_at_the_start_of_the_last_hour():
     assert np.isinf(laxity(model, comfortable)[0])          # 0.85 * 0.99^3 = 0.825 >= 0.80
     sol = schedule(model, at_target, np.zeros(1))
     assert sol["feasible"] and sol["now_kw"][0] > 0.0       # the programme tops it up too
+
+
+# ---------------------------------------------------------------------------
+# One cap for the vehicles and the house batteries
+# ---------------------------------------------------------------------------
+
+LAYOUT = {"connected_state": 0, "soc": 1, "required_soc_departure": 2, "departure_time": 3}
+
+
+def house_obs(connected, ev_soc, target, countdown, load, batt_soc):
+    """One building's observation with the columns the cap shield reads."""
+    o = np.zeros(30)
+    o[0], o[1], o[2], o[3] = connected, ev_soc, target, countdown
+    o[16], o[19] = load, batt_soc              # non-shiftable load, battery state of charge
+    return o
+
+
+def ideal_batteries(n=1, capacity=20.0, power=5.0, tank=None):
+    flat = np.array([[0.0, 1.0], [1.0, 1.0]])
+    model = BatteryModel([capacity] * n, [power] * n, [0.0] * n, [flat] * n, [flat] * n)
+    return HouseStorage(model, battery_action=1, battery_soc=19, soc_lo=0.1, soc_hi=0.9,
+                        tank=tank, tank_action=2)
+
+
+def ideal_tank(n=1, capacity=10.0, power=8.0):
+    """Lossless tank behind a perfect heater: charging by ``a`` draws ``a * 10`` kW."""
+    one = [1.0] * n
+    return TankModel([capacity] * n, [power] * n, one, one, [0.0] * n)
+
+
+def test_forecast_uses_the_battery_action_it_already_knows():
+    """A battery that stops discharging is not forecast to keep discharging."""
+    fc = BaseLoadForecaster(1)
+    obs = [house_obs(0, 0, 0, 0, load=4.0, batt_soc=0.5)]
+    assert fc.predict(obs, 3, known_kw=np.array([-3.0]))[0, 0] == pytest.approx(1.0)
+    fc.observe(np.array([1.0]))                        # the house drew 4 - 3
+    assert fc.predict(obs, 3, known_kw=np.array([0.0]))[0, 0] == pytest.approx(4.0)
+    blind = BaseLoadForecaster(1)                       # the same hours without the knowledge
+    blind.predict(obs, 3)
+    blind.observe(np.array([1.0]))
+    assert blind.predict(obs, 3)[0, 0] == pytest.approx(1.0)      # 3 kW too low
+
+
+def test_unknown_draw_reduces_to_the_plain_persistence_forecast():
+    """Without ``known_kw`` the forecast is, bit for bit, the persistence forecast
+    the EV study was run with: observed load plus last hour's remainder."""
+    rng = np.random.default_rng(0)
+    fc = BaseLoadForecaster(2)
+    prev_exo = prev_real = None
+    for _ in range(30):
+        exo = rng.uniform(1, 5, size=2)
+        obs = [house_obs(0, 0, 0, 0, load=float(x), batt_soc=0.5) for x in exo]
+        expected = exo if prev_real is None else exo + (prev_real - prev_exo)
+        assert np.array_equal(fc.predict(obs, 24)[0], expected)
+        realised = rng.uniform(0, 6, size=2)
+        fc.observe(realised)
+        prev_exo, prev_real = exo, realised
+
+
+def test_battery_charging_is_cut_back_to_what_the_cap_leaves():
+    model = simple_fleet(1)
+    shield = FleetShield(model, LAYOUT, 0, 6.0, "lp", BaseLoadForecaster(1), house=ideal_batteries())
+    obs = [house_obs(0, 0, 0, 0, load=4.0, batt_soc=0.5)]          # no car; the house draws 4 kW
+    out = shield.project(np.array([[0.0, 1.0]], dtype=np.float32), obs)   # battery asks for 5 kW
+    assert out[0, 1] == pytest.approx(0.4, abs=1e-4)               # 2 kW fits under 6
+    assert shield.last["predicted_import_kw"] == pytest.approx(6.0, abs=1e-3)
+    assert shield.last["storage_shed_kw"] == pytest.approx(3.0, abs=1e-3)
+    roomy = FleetShield(model, LAYOUT, 0, 20.0, "lp", BaseLoadForecaster(1), house=ideal_batteries())
+    assert roomy.project(np.array([[0.0, 1.0]], dtype=np.float32), obs)[0, 1] == 1.0
+    assert roomy.last["storage_shed_kw"] == 0.0
+
+
+def test_a_vehicle_with_a_deadline_outranks_battery_charging():
+    model = simple_fleet(1)                                         # 10 kW charger, 50 kWh
+    shield = FleetShield(model, LAYOUT, 0, 12.0, "lp", BaseLoadForecaster(1), house=ideal_batteries())
+    # The car needs 20 kWh in its 2 remaining hours: full power now. House load 1 kW.
+    obs = [house_obs(1, 0.4, 0.8, 1, load=1.0, batt_soc=0.5)]
+    out = shield.project(np.array([[0.0, 1.0]], dtype=np.float32), obs)
+    assert out[0, 0] == pytest.approx(1.0)                          # the car gets its 10 kW
+    assert out[0, 1] == pytest.approx(0.2, abs=1e-4)                # the battery the 1 kW left
+    assert shield.last["predicted_import_kw"] == pytest.approx(12.0, abs=1e-3)
+
+
+def test_battery_discharge_makes_room_for_the_vehicle():
+    model = simple_fleet(1)
+    obs = [house_obs(1, 0.6, 0.8, 0, load=6.0, batt_soc=0.5)]      # last hour: 10 kW or it leaves short
+    with_batt = FleetShield(model, LAYOUT, 0, 12.0, "lp", BaseLoadForecaster(1), house=ideal_batteries())
+    with_batt.project(np.array([[0.0, -0.8]], dtype=np.float32), obs)     # battery covers 4 of the 6 kW
+    assert with_batt.last["feasible"] and with_batt.last["predicted_import_kw"] <= 12.0 + 1e-6
+    alone = FleetShield(model, LAYOUT, 0, 12.0, "lp", BaseLoadForecaster(1))
+    alone.project(np.array([[0.0, 0.0]], dtype=np.float32), obs)
+    assert not alone.last["feasible"]                               # 6 + 10 > 12 without it
+
+
+def test_recovery_charge_below_the_band_is_not_shed():
+    model = simple_fleet(1)
+    house = ideal_batteries()
+    shield = FleetShield(model, LAYOUT, 0, 4.0, "lp", BaseLoadForecaster(1), house=house)
+    obs = [house_obs(0, 0, 0, 0, load=4.0, batt_soc=0.05)]         # below the 0.1 floor; cap already full
+    floor = float(house.floor_action(np.array([0.05]))[0])                # of the battery
+    assert floor == pytest.approx(0.2, abs=1e-3)                    # 1 kWh of 20 back to 0.1 = 0.2 * 5 kW
+    out = shield.project(np.array([[0.0, 1.0]], dtype=np.float32), obs)
+    assert out[0, 1] == pytest.approx(floor, abs=1e-3)              # shed down to the recovery, no further
+
+
+def test_house_batteries_refuse_a_replayed_load():
+    with pytest.raises(ValueError):
+        FleetShield(simple_fleet(1), LAYOUT, 0, 10.0, "lp",
+                    BaseLoadForecaster(1, replay=np.zeros((24, 1))), house=ideal_batteries())
+
+
+def test_daily_pattern_anticipates_a_scheduled_step():
+    """A load that steps up by 5 kW at the same hour every day is forecast to do
+    so from the second day on; plain persistence is 5 kW low every time."""
+    def run(days_of_pattern):
+        fc = BaseLoadForecaster(1, daily_pattern_days=days_of_pattern)
+        errors = []
+        for t in range(24 * 4):
+            hour = t % 24
+            actual = 2.0 + (5.0 if 10 <= hour < 16 else 0.0)       # the step is not in the observed load
+            predicted = fc.predict([house_obs(0, 0, 0, 0, load=2.0, batt_soc=0.5)], 2)[0, 0]
+            if t >= 48 and hour == 10:
+                errors.append(actual - predicted)
+            fc.observe(np.array([actual]))
+        return errors
+    assert run(0) == pytest.approx([5.0, 5.0])
+    assert run(7) == pytest.approx([0.0, 0.0])
+
+
+def test_tank_model_limits():
+    tank = ideal_tank()
+    half, zero = np.array([0.5]), np.array([0.0])
+    assert tank.drawn_kwh(half, np.array([0.3]), zero)[0] == pytest.approx(3.0)       # 0.3 * 10 kWh
+    assert tank.drawn_kwh(half, np.array([1.0]), zero)[0] == pytest.approx(5.0)       # only 5 kWh of room
+    assert tank.drawn_kwh(np.array([0.1]), np.array([1.0]), zero)[0] == pytest.approx(8.0)   # heater: 8 kW
+    assert tank.drawn_kwh(half, np.array([-0.5]), np.array([2.0]))[0] == pytest.approx(-2.0)  # no more than the draw
+    assert tank.drawn_kwh(half, np.array([-0.5]), zero)[0] == 0.0                     # nothing to serve
+
+
+def test_tank_charging_is_known_and_shed_with_the_battery():
+    model = simple_fleet(1)
+    house = ideal_batteries(tank=ideal_tank())
+    obs = [house_obs(0, 0, 0, 0, load=4.0, batt_soc=0.5)]
+    obs[0][18] = 0.2                                                # tank 20% full
+    ask = np.array([[0.0, 1.0, 0.3]], dtype=np.float32)            # battery 5 kW, tank 3 kW
+    roomy = FleetShield(model, LAYOUT, 0, 20.0, "lp", BaseLoadForecaster(1), house=house)
+    out = roomy.project(ask.copy(), obs)
+    assert out[0, 1] == 1.0 and out[0, 2] == pytest.approx(0.3)
+    assert roomy.last["predicted_import_kw"] == pytest.approx(12.0, abs=1e-3)     # 4 + 5 + 3: no surprise
+    tight = FleetShield(model, LAYOUT, 0, 8.0, "lp", BaseLoadForecaster(1), house=house)
+    out = tight.project(ask.copy(), obs)                            # 4 kW of room for 8 kW of charging
+    assert out[0, 1] == pytest.approx(0.5, abs=1e-4) and out[0, 2] == pytest.approx(0.15, abs=1e-4)
+    assert tight.last["predicted_import_kw"] == pytest.approx(8.0, abs=1e-3)
+
+
+def test_tank_model_matches_the_simulator(ev_env):
+    """Random hot-water actions for two days: the model's draw equals the heater's
+    electricity minus what it draws with the tank left alone."""
+    env = ev_env
+    tank = env.dhw_tank_model()
+    rng = np.random.default_rng(0)
+    obs, _ = env.reset()
+    buildings = env._env.buildings
+    worst = 0.0
+    for _ in range(48):
+        soc = np.array([float(o[18]) for o in obs])
+        a = np.zeros((env.num_buildings, env.action_dim), dtype=np.float32)
+        a[:, 0] = rng.uniform(-0.6, 0.6, size=env.num_buildings)
+        ts = env._env.time_step
+        demand = np.array([b.dhw_demand[ts] for b in buildings])
+        predicted = tank.drawn_kwh(soc, a[:, 0], demand)
+        obs = env.step(a)[0]
+        actual = np.array([b.dhw_device.electricity_consumption[ts] for b in buildings])
+        worst = max(worst, float(np.abs(actual - demand / tank.heater_efficiency - predicted).max()))
+    assert worst < 1e-4

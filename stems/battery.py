@@ -172,3 +172,67 @@ class BatteryModel:
         mid = 0.5 * (a_lo + a_hi)
         return (np.where(crossed, mid, a_lo).astype(np.float32),
                 np.where(crossed, mid, a_hi).astype(np.float32))
+
+
+class TankModel:
+    """CityLearn's hot-water tank and its electric heater: what a storage action
+    adds to (or takes off) the building's electricity this hour.
+
+    Reproduces ``Building.update_dhw_storage`` and ``StorageDevice.charge``
+    (2.6.0b1) for an ``ElectricHeater``. With ``e = action * capacity``:
+
+        charge     stored = min(E + min(e, P * eta_h - demand) * r, C) - E,
+                   drawn  = stored / r / eta_h
+        discharge  out    = min(-e, demand),  E' = max(E - out / r, 0),
+                   the heater serves that much less: drawn = -(E - E') * r / eta_h
+
+    where ``E = soc * C * (1 - loss)`` is the tank after its standby loss, ``r``
+    the square root of the round-trip efficiency, ``eta_h`` the heater efficiency
+    and ``P`` its nameplate power. The heater serves the hour's hot-water draw
+    first, so only what is left of its output can go into the tank: this is the
+    one place a charge depends on ``demand``. A heat-pump water heater would need
+    the outdoor temperature and is not handled: ``from_citylearn`` refuses it.
+    """
+
+    def __init__(self, capacity, heater_power, heater_efficiency, storage_efficiency, loss,
+                 hours_per_step: float = 1.0) -> None:
+        f = lambda x: np.asarray(x, dtype=np.float64).reshape(-1)
+        self.capacity, self.heater_power = f(capacity), f(heater_power)
+        self.heater_efficiency, self.storage_efficiency = f(heater_efficiency), f(storage_efficiency)
+        self.loss = f(loss)
+        self.B = self.capacity.size
+        self.dt = float(hours_per_step)
+
+    @classmethod
+    def from_citylearn(cls, buildings: List[Any], seconds_per_time_step: float = 3600.0
+                       ) -> "TankModel":
+        from citylearn.energy_model import ElectricHeater
+
+        for b in buildings:
+            if not isinstance(b.dhw_device, ElectricHeater):
+                raise TypeError(f"{b.name}: TankModel covers an ElectricHeater, "
+                                f"not {type(b.dhw_device).__name__}")
+        return cls(capacity=[b.dhw_storage.capacity for b in buildings],
+                   heater_power=[b.dhw_device.nominal_power for b in buildings],
+                   heater_efficiency=[b.dhw_device.efficiency for b in buildings],
+                   storage_efficiency=[b.dhw_storage.round_trip_efficiency for b in buildings],
+                   loss=[b.dhw_storage.loss_coefficient for b in buildings],
+                   hours_per_step=seconds_per_time_step / 3600.0)
+
+    def drawn_kwh(self, soc: np.ndarray, action: np.ndarray, demand: np.ndarray) -> np.ndarray:
+        """Electricity the action adds this step [kWh], relative to leaving the
+        tank alone: positive when charging, negative when the tank serves demand
+        the heater would otherwise have served."""
+        soc = np.asarray(soc, dtype=np.float64)
+        e = np.asarray(action, dtype=np.float64) * self.capacity * self.dt
+        demand = np.maximum(np.asarray(demand, dtype=np.float64), 0.0)
+        C, r = self.capacity, self.storage_efficiency
+        e_init = np.maximum(soc * C * (1.0 - self.loss), 0.0)
+        spare = np.maximum(self.heater_power * self.heater_efficiency * self.dt - demand, 0.0)
+        heat_in = np.minimum(np.maximum(e, 0.0), spare)
+        stored = np.minimum(e_init + heat_in * r, C) - e_init
+        charge = np.maximum(stored, 0.0) / r / self.heater_efficiency
+        heat_out = np.minimum(np.maximum(-e, 0.0), demand)
+        e_final = np.maximum(e_init - heat_out / np.maximum(r, 1e-9), 0.0)
+        discharge = (e_init - e_final) * r / self.heater_efficiency
+        return np.where(e >= 0.0, charge, -discharge)

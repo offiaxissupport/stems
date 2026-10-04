@@ -142,3 +142,26 @@ def test_peak_discharge_never_exceeds_the_houses_own_net_load():
     assert a == pytest.approx(-(2.0 - 0.5) / 3.0)
     assert rbc.select_action([_hourly(18, load=0.4, solar=1.0)])[0, 1] == 0.0     # PV surplus
     assert rbc.select_action([_hourly(18, load=9.0, solar=0.0)])[0, 1] == -1.0    # capped
+
+
+def test_grid_guard_scales_charging_to_the_cap_exactly():
+    """Two buildings importing 10 kW each, both asking to charge 10 kW, cap 30 kW:
+    half the charging fits. (cap / total = 0.75 would leave 35 kW.)"""
+    from stems.battery import BatteryModel
+    from stems.config import SafetyConfig
+
+    flat = np.array([[0.0, 1.0], [1.0, 1.0]])
+    shield = CBFShield(CBFConfig(P_building_max=1e9, P_grid_max=30.0), 2,
+                       battery_model=BatteryModel([100.0] * 2, [10.0] * 2, [0.0] * 2,
+                                                  [flat] * 2, [flat] * 2),
+                       nominal_power=np.array([10.0, 10.0]), elec_idx=1,
+                       safety_cfg=SafetyConfig(anticipatory=False, robust_margins=False))
+    obs = [np.zeros(30) for _ in range(2)]
+    for o in obs:
+        o[19], o[20] = 0.5, 10.0                 # state of charge, net load last hour
+    ask = np.zeros((2, 3), dtype=np.float32)
+    ask[:, 1] = 1.0
+    out = shield.project(ask, obs)
+    assert out[:, 1] == pytest.approx([0.5, 0.5], abs=1e-6)
+    shield.grid_guard = False                     # a cap shield with a forecast takes over
+    assert shield.project(ask, obs)[:, 1] == pytest.approx([1.0, 1.0])

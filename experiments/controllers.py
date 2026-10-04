@@ -197,16 +197,32 @@ def build_controller(arm: Arm, env, config):
             return house
         return EVRule(house, env.action_dim, ev_indices[0], env.ev_obs_layout()[0])
 
-    def fleet():
-        """The EV fleet shield of a shielded arm on a schema with chargers: the
+    def fleet(barrier):
+        """The cap shield of a shielded arm on a schema with chargers: the
         joint-feasibility programme under the scenario's grid cap, with a causal
-        load forecast (a learning controller changes the load it must fit around)."""
+        load forecast (a learning controller changes the load it must fit around).
+
+        It owns the shared cap for the vehicles *and* the house's battery and
+        hot-water tank, so the
+        state-of-charge barrier's own grid guard -- which predicts from the last
+        hour's net load, vehicle charging included -- is switched off.
+        """
         if not ev_indices or arm.barrier == "none":
             return None
-        from stems.fleet import BaseLoadForecaster, FleetShield
+        from stems.cbf import _IDX_SOC_ELEC
+        from stems.fleet import BaseLoadForecaster, FleetShield, HouseStorage
 
+        lo, hi = barrier.enforced_soc_bounds()
+        names = list(env.action_names)
+        house = HouseStorage(env.battery_model(), env.electrical_storage_action_index,
+                             _IDX_SOC_ELEC, lo, hi,
+                             tank=env.dhw_tank_model() if "dhw_storage" in names else None,
+                             tank_action=names.index("dhw_storage") if "dhw_storage" in names else 0)
+        barrier.grid_guard = False
         return FleetShield(env.ev_fleet_model(), env.ev_obs_layout()[0], ev_indices[0],
-                           config.cbf.P_grid_max, "lp", BaseLoadForecaster(B), reserve_hours=1)
+                           config.cbf.P_grid_max, "lp",
+                           BaseLoadForecaster(B, daily_pattern_days=7), reserve_hours=1,
+                           house=house)
 
     if arm.policy == "rl":
         info = env.get_building_info()
@@ -218,7 +234,7 @@ def build_controller(arm: Arm, env, config):
                            control_indices=None, hvac_action_index=env.hvac_action_index,
                            battery_model=battery_model or env.battery_model(),
                            base_policy=rule() if arm.residual else None)
-        agent.fleet_shield = fleet()
+        agent.fleet_shield = fleet(agent.cbf)
         return agent
 
     if arm.policy == "idle":
@@ -234,4 +250,4 @@ def build_controller(arm: Arm, env, config):
                        action_scale=config.training.action_scale,
                        elec_idx=env.electrical_storage_action_index,
                        safety_cfg=safety, enforce_soc=True, hvac_idx=env.hvac_action_index)
-    return ShieldedController(base, shield, fleet_shield=fleet())
+    return ShieldedController(base, shield, fleet_shield=fleet(shield))

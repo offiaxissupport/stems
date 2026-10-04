@@ -397,6 +397,22 @@ def run_one(spec: Dict[str, Any]) -> Dict[str, Any]:
         controller = build_controller(arm, eval_env, config)
         if model_dir is not None:
             controller.load(str(model_dir))
+        if getattr(controller, "fleet_shield", None) is not None:
+            # The cap shield forecasts the house load from its own history. The
+            # controller is built fresh for evaluation, so that history would be
+            # empty: one pass over the training window (the days just before the
+            # evaluation window) gives it what a deployed controller would have.
+            log("warm-up: load forecast on the training window")
+            warm_env = STEMSEnvironment(schema=schema, seed=seed, heat_pump=True,
+                                        env_kwargs=train_kw,
+                                        hvac_control=scenario.hvac_control)
+            warm = evaluate(controller, warm_env, config, _window_len(train_kw))
+            record["meta"]["forecast_warmup_steps"] = warm["steps"]
+            for inner in (getattr(controller, "base", None),
+                          getattr(controller, "base_policy", None)):
+                if inner is not None and hasattr(inner, "reset"):
+                    inner.reset()
+            del warm_env
         result = evaluate(controller, eval_env, config, _window_len(eval_kw))
 
         record.update(status="ok", eval=result["kpis"], actuators=result["actuators"],

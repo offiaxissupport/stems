@@ -45,9 +45,10 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 
-from stems.battery import BatteryModel
+from stems.battery import BatteryModel, TankModel
 
-__all__ = ["EVFleetModel", "FleetState", "BaseLoadForecaster", "FleetShield", "schedule",
+__all__ = ["EVFleetModel", "FleetState", "BaseLoadForecaster", "FleetShield", "HouseStorage",
+           "schedule",
            "schedule_executable", "allocate", "laxity", "apply_dead_band", "fleet_power_bounds",
            "MYOPIC_RULES",
            "RULES"]
@@ -600,6 +601,21 @@ class BaseLoadForecaster:
     is taken to persist from the previous hour. Later hours: the same hour of the
     previous day, or this hour's estimate until a day of history exists.
 
+    ``known_kw`` removes the largest avoidable error of that persistence. The
+    shield runs after the house controller has decided, so the stationary
+    battery's action for this hour is known and its draw follows from the battery
+    model; only the rest of the remainder has to persist. Without it, the hour a
+    rule stops discharging eight batteries (21:00 here) is forecast 20 kW too low
+    and the cars are given room that is not there.
+
+    ``daily_pattern_days`` handles the scheduled steps no plant model covers (a
+    rule that starts heating eight hot-water tanks at 10:00 adds 15 kW in one
+    hour). The remainder is forecast as last hour's value plus the change it made
+    at this hour of day on the previous days -- the median over up to that many
+    days, so one unusual day does not move it. Zero (the default) is plain
+    persistence, which is what the shield-level study was run with: its houses
+    run on the thermostat alone and have no such steps.
+
     A causal forecast is wrong by some amount every hour, so the cap is enforced
     against ``cap - margin``, where ``margin`` is the ``quantile`` of the last
     ``window`` one-hour-ahead errors of the neighbourhood import (an online
@@ -609,8 +625,10 @@ class BaseLoadForecaster:
 
     def __init__(self, num_buildings: int, replay: Optional[np.ndarray] = None,
                  quantile: float = 0.95, window: int = 168,
-                 load_index: int = 16, solar_index: int = 17) -> None:
+                 load_index: int = 16, solar_index: int = 17,
+                 daily_pattern_days: int = 0) -> None:
         self.B = int(num_buildings)
+        self.daily_pattern_days = int(daily_pattern_days)
         self.replay = None if replay is None else np.asarray(replay, dtype=np.float64)
         self.quantile, self.window = float(quantile), int(window)
         self.load_index, self.solar_index = int(load_index), int(solar_index)
@@ -621,30 +639,59 @@ class BaseLoadForecaster:
         self.history: List[np.ndarray] = []          # realised base per hour
         self._prev_exogenous: Optional[np.ndarray] = None
         self._last_prediction: Optional[np.ndarray] = None
+        self._rest: Optional[np.ndarray] = None       # this hour without the known draw
+        self._prev_known = np.zeros(self.B)
+        self._now_known = np.zeros(self.B)
+        self._remainders: List[np.ndarray] = []      # realised base - observed - known, per hour
         self.errors: List[float] = []
 
     def _exogenous(self, obs_list: Sequence[np.ndarray]) -> np.ndarray:
         return np.array([float(o[self.load_index]) - float(o[self.solar_index])
                          for o in obs_list], dtype=np.float64)
 
-    def predict(self, obs_list: Sequence[np.ndarray], horizon: int) -> np.ndarray:
-        """(horizon, B) forecast, row 0 = the hour about to be simulated."""
+    def predict(self, obs_list: Sequence[np.ndarray], horizon: int,
+                known_kw: Optional[np.ndarray] = None) -> np.ndarray:
+        """(horizon, B) forecast, row 0 = the hour about to be simulated.
+
+        ``known_kw``: per building, the draw this hour of devices whose action is
+        already decided and whose plant is modelled (the stationary battery).
+        """
         if self.replay is not None:
             rows = [self.replay[min(self.t + k, len(self.replay) - 1)] for k in range(horizon)]
             self._last_prediction = np.array(rows[0])
             return np.stack(rows)
         exo = self._exogenous(obs_list)
+        known = (np.zeros(self.B) if known_kw is None
+                 else np.asarray(known_kw, dtype=np.float64).reshape(-1))
         if self.history and self._prev_exogenous is not None:
-            now = exo + (self.history[-1] - self._prev_exogenous)
+            rest = exo + (self.history[-1] - self._prev_exogenous - self._prev_known)
+            rest = rest + self._daily_step()
         else:
-            now = exo
+            rest = exo
+        now = rest + known
         rows = [now]
         for k in range(1, horizon):
             back = len(self.history) - 24 + k
-            rows.append(self.history[back] if 0 <= back < len(self.history) else now)
+            rows.append(self.history[back] if 0 <= back < len(self.history) else rest)
         self._last_prediction = now.copy()
-        self._now_exogenous = exo
+        self._now_exogenous, self._rest, self._now_known = exo, rest, known
         return np.stack(rows)
+
+    def _daily_step(self) -> np.ndarray:
+        """Median change of the remainder into this hour of day over the previous
+        ``daily_pattern_days`` days (zero until one full day and an hour exist)."""
+        n = len(self._remainders)
+        steps = [self._remainders[n - 24 * d] - self._remainders[n - 24 * d - 1]
+                 for d in range(1, self.daily_pattern_days + 1) if n - 24 * d - 1 >= 0]
+        return np.median(steps, axis=0) if steps else np.zeros(self.B)
+
+    def commit(self, known_kw: np.ndarray) -> None:
+        """Replace this hour's known draw by the one finally executed (the shield
+        may have shed battery charging after the forecast was made)."""
+        if self.replay is not None or self._rest is None:
+            return
+        self._now_known = np.asarray(known_kw, dtype=np.float64).reshape(-1)
+        self._last_prediction = self._rest + self._now_known
 
     def observe(self, realised_base: np.ndarray) -> None:
         """Record the hour just simulated: its net load without EV charging."""
@@ -655,6 +702,9 @@ class BaseLoadForecaster:
         self.history.append(realised)
         if self.replay is None:
             self._prev_exogenous = getattr(self, "_now_exogenous", None)
+            self._prev_known = self._now_known
+            if self._prev_exogenous is not None:
+                self._remainders.append(realised - self._prev_exogenous - self._prev_known)
         self.t += 1
 
     @property
@@ -669,6 +719,61 @@ class BaseLoadForecaster:
 # ---------------------------------------------------------------------------
 # The shield
 # ---------------------------------------------------------------------------
+
+@dataclass
+class HouseStorage:
+    """The stationary battery and the hot-water tank behind the same cap, as the
+    cap shield sees them.
+
+    Their actions for this hour are decided before the shield runs, so what they
+    draw is computed from their plant models, not forecast. Their charging is
+    discretionary -- nothing leaves at a deadline, and in this simulator the
+    heater serves every hot-water draw directly whatever the tank holds -- so it
+    is what the shield sheds first when the cap binds. ``soc_lo`` / ``soc_hi``
+    are the band the battery's state-of-charge barrier enforces: a charge that
+    band requires (recovery from below it) is never shed.
+
+    The hot-water demand observation describes the previous hour (measured:
+    it equals the simulator's series one step back, exactly), so last hour's
+    demand stands in for this hour's where the tank model needs it: to bound a
+    discharge, and to bound a charge when the heater is close to its nameplate.
+    """
+
+    battery: BatteryModel
+    battery_action: int
+    battery_soc: int
+    soc_lo: Any
+    soc_hi: Any
+    tank: Optional[TankModel] = None
+    tank_action: int = 0
+    tank_soc: int = 18
+    tank_demand: int = 25
+
+    def read(self, obs_list: Sequence[np.ndarray]) -> Dict[str, np.ndarray]:
+        col = lambda i: np.array([float(o[i]) for o in obs_list], dtype=np.float64)
+        return {"battery_soc": col(self.battery_soc), "tank_soc": col(self.tank_soc),
+                "demand": col(self.tank_demand)}
+
+    def actions(self, actions: np.ndarray):
+        """(battery action, tank action) columns; the tank's is zero without a tank."""
+        a = np.asarray(actions, dtype=np.float64)
+        tank = a[:, self.tank_action] if self.tank is not None else np.zeros(len(a))
+        return a[:, self.battery_action], tank
+
+    def draw_kw(self, levels: Dict[str, np.ndarray], battery_action: np.ndarray,
+                tank_action: np.ndarray) -> np.ndarray:
+        """Draw of both devices this hour [kW]: + charging, - discharging."""
+        kw = self.battery.accepted_kwh(levels["battery_soc"], battery_action) / self.battery.dt
+        if self.tank is not None:
+            kw = kw + self.tank.drawn_kwh(levels["tank_soc"], tank_action,
+                                          levels["demand"]) / self.tank.dt
+        return kw
+
+    def floor_action(self, battery_soc: np.ndarray) -> np.ndarray:
+        """The battery charge its state-of-charge band requires (zero inside it)."""
+        a_lo, _ = self.battery.safe_interval(battery_soc, self.soc_lo, self.soc_hi)
+        return np.maximum(np.asarray(a_lo, dtype=np.float64), 0.0)
+
 
 class FleetShield:
     """Turns requested EV charging into charging that respects the shared cap.
@@ -690,24 +795,36 @@ class FleetShield:
     defers charging to the last feasible hour has no room left when its forecast
     of the house load turns out wrong; with perfect foresight the reserve is not
     needed, with a causal forecast one hour buys the guarantee back.
+
+    ``house`` (``HouseStorage``) puts the stationary batteries and hot-water
+    tanks under the same cap. The vehicles are then planned around what those
+    devices discharge only, and whatever they wanted to charge is cut back, by
+    one common factor, to what is left under the cap once the vehicles are
+    served: a deadline outranks arbitrage. Without ``house`` the shield moves
+    nothing but the chargers.
     """
 
     def __init__(self, model: EVFleetModel, layout: Dict[str, int], ev_action_index: int,
                  cap_kw: float, rule: str, forecaster: BaseLoadForecaster,
                  horizon: int = 24, guard_deadlines: bool = True,
-                 reserve_hours: int = 0) -> None:
+                 reserve_hours: int = 0, house: Optional[HouseStorage] = None) -> None:
         if rule not in RULES:
             raise ValueError(f"unknown rule {rule!r}; choose from {RULES}")
         self.model, self.layout, self.idx = model, dict(layout), int(ev_action_index)
         self.cap, self.rule, self.forecaster = float(cap_kw), rule, forecaster
         self.horizon, self.guard = int(horizon), bool(guard_deadlines)
         self.reserve = int(reserve_hours)
+        if house is not None and forecaster.replay is not None:
+            raise ValueError("house storage needs the causal forecast: a replayed load "
+                             "already contains what it draws")
+        self.house = house
         self.last: Dict[str, Any] = {}
 
-    def state(self, obs_list: Sequence[np.ndarray]) -> FleetState:
+    def state(self, obs_list: Sequence[np.ndarray],
+              known_kw: Optional[np.ndarray] = None) -> FleetState:
         col = lambda key: np.array([float(o[self.layout[key]]) for o in obs_list])
         connected = (col("connected_state") > 0.5) & self.model.has_ev
-        base = self.forecaster.predict(obs_list, self.horizon)
+        base = self.forecaster.predict(obs_list, self.horizon, known_kw)
         return FleetState(connected=connected, soc=np.where(connected, col("soc"), 0.0),
                           target=np.where(connected, col("required_soc_departure"), 0.0),
                           slots=np.where(connected, np.maximum(
@@ -716,7 +833,14 @@ class FleetShield:
 
     def project(self, actions: np.ndarray, obs_list: Sequence[np.ndarray]) -> np.ndarray:
         actions = np.asarray(actions, dtype=np.float32).copy()
-        state = self.state(obs_list)
+        levels = discharge = None
+        if self.house is not None:
+            levels = self.house.read(obs_list)
+            a_batt, a_tank = self.house.actions(actions)
+            # What the vehicles may count on: the discharges, not the charging.
+            discharge = self.house.draw_kw(levels, np.minimum(a_batt, 0.0),
+                                           np.minimum(a_tank, 0.0))
+        state = self.state(obs_list, discharge)
         asked = np.where(state.connected, np.maximum(actions[:, self.idx], 0.0), 0.0)
         if self.rule == "independent" and not self.guard:
             # No shield at all: the request goes to the charger untouched.
@@ -743,10 +867,57 @@ class FleetShield:
             kw = allocate(self.model, state, requested, self.rule)
             report.update(binding=bool(kw.sum() < requested.sum() - 1e-9))
         kw = apply_dead_band(self.model, state, kw)
-        report["predicted_import_kw"] = float(np.maximum(state.base[0] + kw, 0.0).sum())
+        house_kw = state.base[0]
+        if self.house is not None:
+            others = state.base[0] - discharge + kw      # everything but battery and tank
+            actions, storage_kw = self._shed_storage_charging(actions, others, state.cap,
+                                                              levels, report)
+            self.forecaster.commit(storage_kw)
+            house_kw = state.base[0] - discharge + storage_kw
+        report["predicted_import_kw"] = float(np.maximum(house_kw + kw, 0.0).sum())
         self.last = report
         actions[:, self.idx] = self.model.action_for_draw(state.soc, kw)
         return actions
+
+    def _shed_storage_charging(self, actions: np.ndarray, others: np.ndarray, cap: float,
+                               levels: Dict[str, np.ndarray], report: Dict[str, Any]):
+        """Cut battery and tank charging back to what the cap leaves.
+
+        ``others`` is each building's predicted draw without those two devices
+        (house load, PV and the vehicle's charging). Battery charging above the
+        band's recovery floor and all tank charging are scaled by the largest
+        common factor ``s`` in [0, 1] with
+        ``sum_b max(others_b + storage_b(s), 0) <= cap``; the import is
+        non-decreasing in ``s``, so ``s`` is found by bisection on the plant
+        models themselves. Discharging is left alone. If the cap is exceeded with
+        no charging at all, nothing here can help and the excess is reported.
+        Returns the actions and the storage draw they produce.
+        """
+        h = self.house
+        a_batt, a_tank = h.actions(actions)
+        floor = np.minimum(h.floor_action(levels["battery_soc"]), np.maximum(a_batt, 0.0))
+        shed_batt, shed_tank = a_batt > floor + 1e-9, a_tank > 1e-9
+
+        def at(s: float):
+            batt = np.where(shed_batt, floor + s * (a_batt - floor), a_batt)
+            tank = np.where(shed_tank, s * a_tank, a_tank)
+            kw = h.draw_kw(levels, batt, tank)
+            return float(np.maximum(others + kw, 0.0).sum()), batt, tank, kw
+
+        total, _, _, asked_kw = at(1.0)
+        report["storage_shed_kw"] = 0.0
+        if total <= cap + 1e-9 or not (shed_batt.any() or shed_tank.any()):
+            return actions, asked_kw
+        lo, hi = 0.0, 1.0                    # at(hi) is over the cap
+        for _ in range(24):
+            mid = 0.5 * (lo + hi)
+            lo, hi = (mid, hi) if at(mid)[0] <= cap else (lo, mid)
+        _, batt, tank, kw = at(lo)
+        report["storage_shed_kw"] = float((asked_kw - kw).sum())
+        actions[:, h.battery_action] = batt.astype(np.float32)
+        if h.tank is not None:
+            actions[:, h.tank_action] = tank.astype(np.float32)
+        return actions, kw
 
     def observe(self, next_obs_list: Sequence[np.ndarray], ev_draw_kwh: np.ndarray,
                 net_index: int = 20) -> None:

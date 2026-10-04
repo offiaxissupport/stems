@@ -85,6 +85,12 @@ def line_plot(path: Path, title: str, ylabel: str, series: Dict[str, Dict[float,
     plt.close(fig)
 
 
+# Not reported: ``avoidable_exceed_rate`` (hours over the cap). It was counted with
+# a 1e-6 kW threshold, and a shield that plans to the cap sits exactly on it, so a
+# plant-model error of a few watts counts as an hour over: the joint programme
+# showed 4% of hours "over" with 0.0 kWh over. Energy over the cap is the measure.
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Report the EV coupling study")
     ap.add_argument("--root", default="results/ev_coupling")
@@ -107,7 +113,6 @@ def main() -> None:
             for value, title, fmt in (
                     ("missed_rate", f"Missed departures, {name}", ".3f"),
                     ("unserved_kwh", f"Energy not delivered at departure [kWh], {name}", ".1f"),
-                    ("avoidable_exceed_rate", f"Hours over the cap caused by charging, {name}", ".3f"),
                     ("avoidable_exceed_kwh", f"Energy over the cap caused by charging [kWh], {name}", ".1f")):
                 out.append(table(title, pivot(sub, lambda r: r["rule"], value), RULE_ORDER, fmt,
                                  lambda k: RULE_LABEL[k]))
@@ -142,11 +147,21 @@ def main() -> None:
         out.append("## How the cars ask (perfect foresight)\n")
         keys = [(p, r) for p in ("asap", "offpeak", "none") for r in ("llf", "lp")]
         lab = lambda k: f"{k[0]} + {RULE_LABEL[k[1]]}"
-        for value, title, fmt in (("cost", "Neighbourhood cost", ".0f"),
+        for value, title, fmt in (("missed_rate", "Missed departures", ".3f"),
                                   ("unserved_kwh", "Energy not delivered [kWh]", ".1f"),
+                                  ("ev_kwh", "Energy drawn by the chargers [kWh]", ".0f"),
+                                  ("cost", "Neighbourhood cost", ".0f"),
+                                  ("avoidable_exceed_kwh",
+                                   "Energy over the cap caused by charging [kWh]", ".1f"),
                                   ("peak_import_kw", "Peak import [kW]", ".1f")):
             out.append(table(title, pivot(rows, lambda r: (r["policy"], r["rule"]), value),
                              keys, fmt, lab))
+        series = pivot(rows, lambda r: f"{r['policy']}+{r['rule']}", "unserved_kwh")
+        order = [f"{p}+{r}" for p, r in keys]
+        line_plot(figs / "ev_policy.png",
+                  "Energy not delivered at departure, by how the cars ask (perfect foresight)",
+                  "kWh per 14-day window", series, order,
+                  {f"{p}+{r}": f"{p} + {RULE_LABEL[r]}" for p, r in keys})
 
     flex_path = root / "flexibility.json"
     if flex_path.exists():
@@ -179,6 +194,13 @@ def main() -> None:
                                   ("cost", "Neighbourhood cost", ".0f")):
             out.append(table(title, pivot(rows, lambda r: (r["policy"], r["rule"], r.get("reserve", 0)),
                                           value), keys, fmt, lab))
+        deferred = [r for r in rows if r["policy"] == "none"]
+        line_plot(figs / "ev_reserve.png",
+                  "Deferred charging under a causal forecast: energy not delivered",
+                  "kWh per 14-day window",
+                  pivot(deferred, lambda r: f"{r['rule']}{r.get('reserve', 0)}", "unserved_kwh"),
+                  [f"{r}{h}" for r in ("llf", "lp") for h in (0, 1, 2)],
+                  {f"{r}{h}": f"{RULE_LABEL[r]}, reserve {h} h" for r in ("llf", "lp") for h in (0, 1, 2)})
 
     text = "\n".join(out)
     (root / "report.md").write_text(text, encoding="utf-8")

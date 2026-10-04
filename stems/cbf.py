@@ -110,6 +110,10 @@ class CBFShield:
                          / battery_model.capacity).astype(np.float32)
         self.nominal_power = (np.asarray(nominal_power, dtype=np.float32).reshape(-1)
                               if nominal_power is not None else None)
+        # The grid-total guard below predicts from the last hour's net load. A cap
+        # shield with a forecast (``stems.fleet.FleetShield`` with ``house``)
+        # replaces it and switches it off; the per-building guard stays.
+        self.grid_guard = True
         # Barrier h4 (anticipatory hot-water readiness) and the weather-dependent
         # CoP model used by the power guard. Both optional; when absent the shield
         # behaves exactly as before (battery-only).
@@ -222,15 +226,26 @@ class CBFShield:
             allowed = max(0.0, (p_cap - net[i]) / max(nom[i], 1e-6))
             safe[i, self.elec_idx] = float(np.clip(allowed, min(a_lo[i], safe[i, self.elec_idx]),
                                                    safe[i, self.elec_idx]))
-        # Grid total import guard: if the sum of positive imports exceeds the
-        # grid cap, scale down all charging proportionally.
-        pred_import = net + np.maximum(safe[:, self.elec_idx], 0.0) * nom
-        total = float(np.maximum(pred_import, 0.0).sum())
+        if not self.grid_guard:
+            return safe
+        # Grid total import guard: if the sum of positive imports would exceed the
+        # grid cap, scale all charging by the largest common factor that fits.
+        # (The factor is not cap / total: only the charging shrinks, not the load
+        # under it, and a building exporting PV absorbs its own charge for free.
+        # The import is non-decreasing in the factor, so bisection finds it.)
+        charge = np.maximum(safe[:, self.elec_idx], 0.0) * nom
         g_cap = self.grid_cap()
-        if total > g_cap and total > 1e-6:
-            scale = g_cap / total
+        imported = lambda s: float(np.maximum(net + s * charge, 0.0).sum())
+        if imported(1.0) > g_cap and charge.sum() > 1e-9:
+            lo_s, hi_s = 0.0, 1.0
+            for _ in range(30):
+                mid = 0.5 * (lo_s + hi_s)
+                lo_s, hi_s = (mid, hi_s) if imported(mid) <= g_cap else (lo_s, mid)
             charging = safe[:, self.elec_idx] > 0
-            safe[charging, self.elec_idx] *= scale
+            # never below the charge the state-of-charge band requires
+            keep = np.minimum(np.maximum(a_lo, 0.0), safe[:, self.elec_idx])
+            scaled = np.maximum(safe[:, self.elec_idx] * lo_s, keep)
+            safe[charging, self.elec_idx] = scaled[charging]
         return safe
 
     # ------------------------------------------------------------------
