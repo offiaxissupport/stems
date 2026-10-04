@@ -8,7 +8,16 @@ Policies
     ``rbc``   the time-of-use storage rule of ``stems.baselines.RuleBasedAgent``.
     ``rl``    the learned policy (``stems.agent.STEMSAgent``). ``rl-res`` arms learn
               a bounded correction on the ``rbc`` rule (residual policy learning);
-              ``+pen`` arms pay for every shield intervention.
+              ``+pen`` arms pay for every shield intervention; ``+own`` arms pay
+              for the vehicle charging the cap shield has to force.
+    ``hp-shift`` / ``rl-hp``
+              heat-pump-only control (the set-point offset and nothing else):
+              a fixed pre-condition-and-coast schedule, and the learned policy
+              with the battery and hot-water tank held idle.
+
+On a schema with chargers the ``rbc`` arms also say how the cars ask
+(``ev_request``): on arrival, outside the tariff peak, or never (the shield
+alone must then get them charged -- what a policy that leans on it does).
 
 Safety layers (the state-of-charge barrier; the grid and building power caps of
 the default scenario never bind, so they are not what these arms differ in)
@@ -32,9 +41,23 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
+from stems.baselines import RuleBasedAgent
+
 import numpy as np
 
 UNCALIBRATED_SOC_RATE = 0.1   # the uniform constant of the original implementation
+
+# The cap shield of the controllers (``stems.fleet.FleetShield``): the later hours
+# of its plan are held to the day-ahead forecast's own error margin, and no
+# departure is planned early on top of that. Chosen on the winter *training*
+# window with a controller that never asks to charge (the hardest case for the
+# shield; second week scored, first week as forecast history), by fewest missed
+# departures and then cost:
+#     reserve 0 / 1 / 2 h, one-hour margin only:   8 / 4 / 1 of 33 missed
+#     reserve 0 / 1 / 2 h, with the later margin:  0 / 0 / 0 missed, cost 521.7 / 525.4 / 529.5
+# The evaluation windows were not used. See docs/REPORT_2026-10.md, 6.8.
+RESERVE_HOURS = 0
+LEAD_MARGIN = True
 
 RBC_ACTIONS = ["dhw_storage", "electrical_storage", "cooling_or_heating_device"]
 
@@ -46,6 +69,9 @@ class Arm:
     barrier: str   # "none" | "basic" | "calibrated"
     residual: bool = False     # rl only: the policy corrects the time-of-use rule
     penalty: float = 0.0       # rl only: weight of the shield-intervention penalty
+    ev_request: str = "asap"   # rbc on a schema with chargers: "asap" | "offpeak" | "never"
+    forced_penalty: float = 0.0   # rl only: reward lost per kWh of charging the shield forces
+    control: Optional[Tuple[str, ...]] = None   # rl only: the actuators it drives (None: all)
 
     @property
     def learns(self) -> bool:
@@ -62,6 +88,14 @@ ARMS: Dict[str, Arm] = {a.name: a for a in (
     Arm("rl+calibrated", "rl", "calibrated"),
     Arm("rl-res+calibrated", "rl", "calibrated", residual=True),
     Arm("rl+calibrated+pen", "rl", "calibrated", penalty=1.0),
+    # How the cars ask, with the same house rule and shields.
+    Arm("rbc-offpeak+calibrated", "rbc", "calibrated", ev_request="offpeak"),
+    Arm("rbc-never+calibrated", "rbc", "calibrated", ev_request="never"),
+    # The policy pays the off-peak tariff again for every kWh the shield forces.
+    Arm("rl+calibrated+own", "rl", "calibrated", forced_penalty=0.22),
+    # Heat-pump-only control.
+    Arm("hp-shift", "hp-shift", "none"),
+    Arm("rl-hp", "rl", "none", control=("cooling_or_heating_device",)),
 )}
 
 
@@ -72,8 +106,12 @@ class EVRule:
     asks for full power for its own vehicle, with no view of the shared cap.
     """
 
-    def __init__(self, house, action_dim: int, ev_index: int, layout: Dict[str, int]) -> None:
+    def __init__(self, house, action_dim: int, ev_index: int, layout: Dict[str, int],
+                 ev_request: str = "asap") -> None:
+        if ev_request not in ("asap", "offpeak", "never"):
+            raise ValueError(f"unknown ev_request {ev_request!r}")
         self.house, self.action_dim, self.ev_index, self.layout = house, action_dim, ev_index, layout
+        self.ev_request = ev_request
 
     def reset(self) -> None:
         if hasattr(self.house, "reset"):
@@ -89,7 +127,40 @@ class EVRule:
             a[:, :3] = self.house.select_action(obs_list, history, explore)
         col = lambda key: np.array([float(o[self.layout[key]]) for o in obs_list])
         short = (col("connected_state") > 0.5) & (col("soc") < col("required_soc_departure"))
+        hour = int(round(float(obs_list[0][1])))
+        if self.ev_request == "never" or (self.ev_request == "offpeak"
+                                          and hour in RuleBasedAgent.PEAK_HOURS):
+            short = np.zeros_like(short)
         a[:, self.ev_index] = np.where(short, 1.0, 0.0)
+        return a
+
+
+class SetpointShiftPolicy:
+    """Heat-pump-only schedule: pre-condition in the four hours before the tariff
+    peak, coast through it, the thermostat's own set point otherwise.
+
+    The action is the set-point offset (the environment's ``setpoint`` control);
+    "pre-condition" is warmer when the heat pump is heating and cooler when it
+    is cooling, which is read from the sign of the action the thermostat last
+    executed. Storage is not touched.
+    """
+
+    PREP_HOURS = range(13, 17)        # 12:00-16:00
+
+    def __init__(self, env) -> None:
+        if env.hvac_control != "setpoint":
+            raise RuntimeError("SetpointShiftPolicy needs hvac_control='setpoint'")
+        self.env = env
+
+    def select_action(self, obs_list, history=None, explore: bool = False) -> np.ndarray:
+        env = self.env
+        a = np.zeros((env.num_buildings, env.action_dim), dtype=np.float32)
+        hour = int(round(float(obs_list[0][1])))
+        heating = env.executed_actions[:, env.hvac_action_index] >= 0.0
+        if hour in self.PREP_HOURS:
+            a[:, env.hvac_action_index] = np.where(heating, 1.0, -1.0)
+        elif hour in RuleBasedAgent.PEAK_HOURS:
+            a[:, env.hvac_action_index] = np.where(heating, -1.0, 1.0)
         return a
 
 
@@ -176,7 +247,6 @@ def safety_layer(barrier: str, env):
 def build_controller(arm: Arm, env, config):
     """Construct the controller for ``arm``, calibrated from ``env``."""
     from stems.agent import STEMSAgent
-    from stems.baselines import RuleBasedAgent
     from stems.cbf import CBFShield
     from stems.graph import BuildingGraph
 
@@ -195,7 +265,8 @@ def build_controller(arm: Arm, env, config):
                                battery_nominal_power=battery["nominal_power"])
         if not ev_indices:
             return house
-        return EVRule(house, env.action_dim, ev_indices[0], env.ev_obs_layout()[0])
+        return EVRule(house, env.action_dim, ev_indices[0], env.ev_obs_layout()[0],
+                      ev_request=arm.ev_request)
 
     def fleet(barrier):
         """The cap shield of a shielded arm on a schema with chargers: the
@@ -221,17 +292,20 @@ def build_controller(arm: Arm, env, config):
         barrier.grid_guard = False
         return FleetShield(env.ev_fleet_model(), env.ev_obs_layout()[0], ev_indices[0],
                            config.cbf.P_grid_max, "lp",
-                           BaseLoadForecaster(B, daily_pattern_days=7), reserve_hours=1,
-                           house=house)
+                           BaseLoadForecaster(B, daily_pattern_days=7),
+                           reserve_hours=RESERVE_HOURS, house=house, lead_margin=LEAD_MARGIN)
 
     if arm.policy == "rl":
         info = env.get_building_info()
         graph = BuildingGraph(B, info["positions"], info["features"], config.graph)
         config.training.intervention_penalty = float(arm.penalty)
+        config.training.forced_charge_penalty = float(arm.forced_penalty)
+        names = list(env.action_names)
+        control = None if arm.control is None else [names.index(n) for n in arm.control]
         agent = STEMSAgent(env.obs_dim, env.action_dim, B, graph, config=config,
                            battery_info=battery, use_cbf=arm.barrier != "none",
                            electrical_storage_action_index=env.electrical_storage_action_index,
-                           control_indices=None, hvac_action_index=env.hvac_action_index,
+                           control_indices=control, hvac_action_index=env.hvac_action_index,
                            battery_model=battery_model or env.battery_model(),
                            base_policy=rule() if arm.residual else None)
         agent.fleet_shield = fleet(agent.cbf)
@@ -241,10 +315,15 @@ def build_controller(arm: Arm, env, config):
         base = IdlePolicy(B, env.action_dim)
     elif arm.policy == "rbc":
         base = rule()
+    elif arm.policy == "hp-shift":
+        base = SetpointShiftPolicy(env)
     else:
         raise ValueError(f"unknown policy {arm.policy!r}")
     if arm.barrier == "none":
-        return PlainController(base)
+        controller = PlainController(base)
+        if arm.policy == "hp-shift":       # the battery is not this controller's device
+            controller.control_indices = [env.hvac_action_index]
+        return controller
     shield = CBFShield(config.cbf, B, battery_model=battery_model,
                        nominal_power=battery["nominal_power"],
                        action_scale=config.training.action_scale,

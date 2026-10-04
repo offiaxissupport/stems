@@ -171,3 +171,26 @@ def test_grid_reward_never_favours_more_draw():
         post[20] = draw
         rewards.append(r.compute([pre], np.zeros((1, 3), np.float32), [post], [draw])[0])
     assert all(a > b for a, b in zip(rewards, rewards[1:])), rewards
+
+
+def test_departure_penalty_is_on_what_the_car_left_with():
+    """The charge of a car's last connected hour is never observed: the reward must
+    take the state of charge at departure from the simulator's record."""
+    from stems.reward import STEMSReward
+
+    layout = {"connected_state": 30, "soc": 31, "required_soc_departure": 32, "departure_time": 33}
+    r = STEMSReward(num_buildings=1, ev_layout=layout)
+    before, after = np.zeros(36), np.zeros(36)
+    before[30], before[31], before[32] = 1.0, 0.70, 0.80     # last hour starts 0.10 short
+    after[30] = 0.0                                          # gone
+    act = np.zeros((1, 4))
+    full = r.compute([before], act, [after], ev_departures=[
+        {"building": 0, "soc": 0.80, "required_soc": 0.80, "capacity_kwh": 60.0}])[0]
+    short = r.compute([before], act, [after], ev_departures=[
+        {"building": 0, "soc": 0.75, "required_soc": 0.80, "capacity_kwh": 60.0}])[0]
+    blind = r.compute([before], act, [after])[0]             # observations only
+    assert full - short == pytest.approx(r.cfg.ev_service * 0.05)
+    assert full - blind == pytest.approx(r.cfg.ev_service * 0.10)   # charged as if the last hour did nothing
+    nobody = r.compute([before], act, [after], ev_departures=[
+        {"building": 3, "soc": 0.1, "required_soc": 0.9, "capacity_kwh": 60.0}])[0]
+    assert nobody == pytest.approx(full)                     # another building's car

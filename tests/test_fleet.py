@@ -546,3 +546,86 @@ def test_tank_model_matches_the_simulator(ev_env):
         actual = np.array([b.dhw_device.electricity_consumption[ts] for b in buildings])
         worst = max(worst, float(np.abs(actual - demand / tank.heater_efficiency - predicted).max()))
     assert worst < 1e-4
+
+
+# ---------------------------------------------------------------------------
+# A shield that can be leaned on
+# ---------------------------------------------------------------------------
+
+def lossy_fleet(loss=0.01):
+    """One 50 kWh vehicle on a 10 kW charger that loses 1% of its charge per hour."""
+    flat = np.array([[0.0, 1.0], [1.0, 1.0]])
+    battery = BatteryModel([50.0], [10.0], [loss], [flat], [flat])
+    return EVFleetModel([True], [10.0], [1.0], [1.0], battery)
+
+
+def test_a_departure_planned_early_still_holds_at_the_door():
+    """Planned two hours early, the requirement is raised by two hours of standby
+    loss: at 0.8 two hours before leaving, the car would leave at 0.784."""
+    model = lossy_fleet()
+    obs = [house_obs(1, 0.5, 0.8, 5, load=0.0, batt_soc=0.5)]      # six hours left
+    plain = FleetShield(model, LAYOUT, 0, 100.0, "lp", BaseLoadForecaster(1)).state(obs)
+    assert plain.slots[0] == 6 and plain.target[0] == pytest.approx(0.8)
+    early = FleetShield(model, LAYOUT, 0, 100.0, "lp", BaseLoadForecaster(1), reserve_hours=2).state(obs)
+    assert early.slots[0] == 4
+    assert early.target[0] == pytest.approx(0.8 / 0.99 ** 2)
+    assert model.idle_soc(early.target, np.array([2]))[0] == pytest.approx(0.8)   # and it holds
+    last = [house_obs(1, 0.8, 0.8, 0, load=0.0, batt_soc=0.5)]      # the real last hour
+    assert FleetShield(model, LAYOUT, 0, 100.0, "lp", BaseLoadForecaster(1),
+                       reserve_hours=2).state(last).target[0] == pytest.approx(0.8)
+
+
+def test_later_margin_is_the_day_ahead_error_and_never_below_the_hourly_one():
+    fc = BaseLoadForecaster(1)
+    rng = np.random.default_rng(1)
+    for t in range(24 * 6):
+        day = t // 24
+        load = 5.0 + (4.0 if day % 2 else 0.0) + rng.normal(0.0, 0.1)   # every other day is 4 kW higher
+        fc.predict([house_obs(0, 0, 0, 0, load=load, batt_soc=0.5)], 24)
+        fc.observe(np.array([load]))
+    assert len(fc.day_errors) == 24 * 5
+    assert fc.margin < 1.0                       # one hour ahead the load is observed
+    assert 3.5 < fc.later_margin < 4.5           # a day ahead it is 4 kW off on the bad days
+    assert BaseLoadForecaster(1, replay=np.zeros((24, 1))).later_margin == 0.0
+
+
+def test_the_programme_plans_the_later_hours_against_their_own_cap():
+    """20 kWh to deliver in two hours on a 10 kW charger: fits under 10 kW in both
+    hours, and is 5 kWh short if the second hour is only trusted for 5 kW."""
+    model = simple_fleet(1)
+    state = FleetState([True], [0.4], [0.8], [2], np.zeros((4, 1)), 10.0)
+    assert schedule(model, state, np.zeros(1))["feasible"]
+    wary = FleetState([True], [0.4], [0.8], [2], np.zeros((4, 1)), 10.0, cap_later=5.0)
+    sol = schedule(model, wary, np.zeros(1))
+    assert not sol["feasible"] and sol["total_shortfall_kwh"] == pytest.approx(5.0, abs=1e-6)
+    assert sol["now_kw"][0] == pytest.approx(10.0)       # everything it can, now
+
+
+def test_lead_margin_makes_a_deferred_plan_start_while_there_is_room():
+    """A car that could wait under the hourly margin is started now when the later
+    hours are only trusted up to the day-ahead margin."""
+    model = simple_fleet(1)
+    obs = [house_obs(1, 0.6, 0.8, 1, load=2.0, batt_soc=0.5)]      # 10 kWh in two hours
+    zeros = np.zeros((1, 3), dtype=np.float32)
+
+    def shield(lead):
+        fc = BaseLoadForecaster(1)
+        fc.day_errors = [8.0] * 48                       # the day-ahead forecast is 8 kW off
+        fc.errors = [0.0] * 48
+        return FleetShield(model, LAYOUT, 0, 12.0, "lp", fc, lead_margin=lead)
+    relaxed, wary = shield(False), shield(True)
+    assert relaxed.project(zeros.copy(), obs)[0, 0] == 0.0          # 2 + 10 fits next hour
+    assert wary.state(obs).cap_later == pytest.approx(4.0)
+    assert wary.project(zeros.copy(), obs)[0, 0] > 0.0              # next hour is trusted for 2 kW only
+
+
+def test_the_shield_reports_what_it_forced_and_what_it_cut():
+    model = simple_fleet(2)
+    layout = LAYOUT
+    obs = [house_obs(1, 0.6, 0.8, 0, load=0.0, batt_soc=0.5),      # must have 10 kW now
+           house_obs(1, 0.4, 0.8, 9, load=0.0, batt_soc=0.5)]      # can wait
+    shield = FleetShield(model, layout, 0, 14.0, "lp", BaseLoadForecaster(2))
+    ask = np.array([[0.0], [1.0]], dtype=np.float32)               # the wrong way round
+    shield.project(ask, obs)
+    assert shield.last["forced_kw"] == pytest.approx([10.0, 0.0])
+    assert shield.last["cut_kw"] == pytest.approx([0.0, 6.0])

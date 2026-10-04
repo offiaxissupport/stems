@@ -134,7 +134,8 @@ def run(spec: Dict[str, Any]) -> Dict[str, Any]:
         shield = FleetShield(model, layout, e, spec["cap"],
                              "independent" if rule == "noguard" else rule, forecaster,
                              guard_deadlines=rule != "noguard",
-                             reserve_hours=int(spec.get("reserve", 0)))
+                             reserve_hours=int(spec.get("reserve", 0)),
+                             lead_margin=bool(spec.get("lead", False)))
         cap = float(spec["cap"])
 
         obs, _ = env.reset()
@@ -211,9 +212,11 @@ STAGES = {
     # does it matter how the cars ask?
     "policy": dict(bases=["idle"], policies=["asap", "offpeak", "none"], rules=["llf", "lp"],
                    forecasts=["replay"]),
-    # under a causal forecast, what does planning every departure early buy?
+    # under a causal forecast, what do planning every departure early and holding
+    # the later hours to the day-ahead forecast's own margin buy? (The margin only
+    # enters the programme: the sorting rules do not look past this hour.)
     "reserve": dict(bases=["idle"], policies=["asap", "none"], rules=["llf", "lp"],
-                    forecasts=["causal"], reserves=[0, 1, 2]),
+                    forecasts=["causal"], reserves=[0, 1, 2], leads=[False, True]),
     # how much room do the house's battery and thermal mass make for the cars?
     "flexibility": dict(bases=["idle", "rbc", "rbc+shed"], policies=["asap"],
                         rules=["llf", "lp"], forecasts=["replay"]),
@@ -244,13 +247,17 @@ def main() -> None:
             np.save(path, record_base(season, args.days, base))
 
     specs = []
-    for season, base, policy, rule, forecast, cap, reserve in itertools.product(
+    for season, base, policy, rule, forecast, cap, reserve, lead in itertools.product(
             args.seasons, stage["bases"], stage["policies"], stage["rules"],
-            stage["forecasts"], args.caps, stage.get("reserves", [0])):
+            stage["forecasts"], args.caps, stage.get("reserves", [0]),
+            stage.get("leads", [False])):
         if rule in ("noguard", "independent") and forecast == "causal":
             continue                      # these rules never look at the forecast
+        if lead and rule != "lp":
+            continue                      # only the programme plans the later hours
         specs.append(dict(stage=args.stage, season=season, days=args.days, base=base,
                           policy=policy, rule=rule, forecast=forecast, cap=cap, reserve=reserve,
+                          lead=lead,
                           log_flexibility=rule == "lp" and forecast == "replay",
                           base_path=str(out_dir / f"base__{season}{args.days}d__{base}.npy")))
     print(f"[ev] stage {args.stage}: {len(specs)} runs, workers={args.workers}", flush=True)
@@ -272,7 +279,8 @@ def main() -> None:
                         "code": fingerprint},
                "results": sorted(results, key=lambda r: (r["season"], r["base"], r["policy"],
                                                          r["rule"], r["forecast"],
-                                                         r.get("reserve", 0), -r["cap"]))}
+                                                         r.get("reserve", 0), r.get("lead", False),
+                                                         -r["cap"]))}
     (out_dir / f"{args.stage}.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
     print(f"[ev] wrote {args.out}/{args.stage}.json in {(time.time() - t0) / 60:.1f} min")
 

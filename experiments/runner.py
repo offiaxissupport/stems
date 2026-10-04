@@ -221,6 +221,11 @@ def train(agent, env, config, episodes: int, log: Callable[[str], None],
     buffer = EpisodeBuffer()
     hist = HistoryBuffer(B, env.obs_dim, config.transformer.window_size)
     curve: List[Dict[str, Any]] = []
+    fleet_shield = getattr(agent, "fleet_shield", None)
+    # A constraint on a device the policy does not drive (the battery in a
+    # heat-pump-only study) is a constant cost: it would only saturate its
+    # multiplier and scale every reward advantage down by 1 / (1 + lambda).
+    battery_controlled = agent.elec_idx in agent.control_indices
 
     for ep in range(1, episodes + 1):
         t0 = time.time()
@@ -241,8 +246,14 @@ def train(agent, env, config, episodes: int, log: Callable[[str], None],
             n += 1
             done = bool(term or trunc) or n >= max_steps
 
-            rewards = reward_fn.compute(obs, actions, nxt, prev_net)
+            rewards = reward_fn.compute(obs, actions, nxt, prev_net,
+                                        ev_departures=env.ev_departures if ev_layouts else None)
             prev_net = [float(o[_IDX_NET]) for o in nxt]
+            if config.training.forced_charge_penalty and fleet_shield is not None:
+                forced = fleet_shield.last.get("forced_kw")
+                if forced is not None:
+                    rewards = [r - config.training.forced_charge_penalty * float(f)
+                               for r, f in zip(rewards, forced)]
             if config.training.intervention_penalty:
                 moved = ((agent._last_nominal_actions - agent._last_safe_actions) ** 2).sum(axis=1)
                 rewards = [r - config.training.intervention_penalty * float(m)
@@ -251,6 +262,8 @@ def train(agent, env, config, episodes: int, log: Callable[[str], None],
             soc = np.array([o[_IDX_SOC] for o in nxt], dtype=np.float32)
             net = np.array([o[_IDX_NET] for o in nxt], dtype=np.float32)
             c_soc = ((soc < cbf.SOC_min) | (soc > cbf.SOC_max)).astype(np.float32)
+            if not battery_controlled:
+                c_soc[:] = 0.0      # not the policy's device: no action of its can change it
             c_pow = (np.abs(net) > cbf.P_building_max).astype(np.float32)
             grid = float(np.maximum(net, 0.0).sum() > cbf.P_grid_max)
             costs = np.stack([c_soc, c_pow, np.full(B, grid, dtype=np.float32)], axis=-1)
@@ -291,9 +304,13 @@ def evaluate(controller, env, config, max_steps: int) -> Dict[str, Any]:
     # Hot-water "readiness" is not scored: in CityLearn the heater serves every
     # hot-water draw directly, so an empty tank costs nothing and the KPI would
     # only measure agreement with the rule that defines it.
+    # The battery band is scored only where the battery is the controller's to
+    # drive (in a heat-pump-only arm it stands idle by construction).
+    controlled = getattr(controller, "control_indices", None)
+    count_soc = controlled is None or env.electrical_storage_action_index in controlled
     metrics = MetricsCalculator(B, config.cbf, soc_rate=env.battery_info()["soc_rate"],
                                 heating_setpoint_idx=env.heating_setpoint_idx,
-                                count_soc=True, hvac_idx=env.hvac_action_index)
+                                count_soc=count_soc, hvac_idx=env.hvac_action_index)
     evidence = ActuatorEvidence(env)
     hist = HistoryBuffer(B, env.obs_dim, config.transformer.window_size)
     has_ev = not env.using_mock and bool(env.ev_action_indices())

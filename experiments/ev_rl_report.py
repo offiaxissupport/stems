@@ -29,12 +29,16 @@ COLUMNS = (
     ("discomfort_rate", "Discomfort", ".3f"),
     ("battery_equivalent_full_cycles", "Battery cycles", ".1f"),
 )
-ARM_ORDER = ["idle", "rbc", "idle+calibrated", "rbc+calibrated", "rl+calibrated",
-             "rl-res+calibrated", "rl+calibrated+pen"]
+ARM_ORDER = ["idle", "rbc", "idle+calibrated", "rbc+calibrated", "rbc-offpeak+calibrated",
+             "rbc-never+calibrated", "rl+calibrated", "rl+calibrated+own", "rl-res+calibrated",
+             "rl+calibrated+pen"]
 ARM_LABEL = {"idle": "no control (cars never charged)", "rbc": "rule, cars charge on arrival, no shield",
              "idle+calibrated": "no control + shields", "rbc+calibrated": "rule + shields",
              "rl+calibrated": "RL + shields", "rl-res+calibrated": "residual RL + shields",
-             "rl+calibrated+pen": "RL + shields + penalty"}
+             "rl+calibrated+pen": "RL + shields + penalty",
+             "rbc-offpeak+calibrated": "rule, cars charge off-peak + shields",
+             "rbc-never+calibrated": "rule, cars never ask + shields",
+             "rl+calibrated+own": "RL + shields, pays for forced charging"}
 
 
 def load(root: Path) -> List[Dict[str, Any]]:

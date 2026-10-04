@@ -197,6 +197,15 @@ class TrainingConfig:
     # shield for free. 0 switches it off.
     intervention_penalty: float = 0.0
 
+    # Reward lost per kWh of vehicle charging the cap shield had to *force* (its
+    # deadline rescue: charging above what the policy asked for). Without it a
+    # policy behind the shield pays nothing for never charging a car -- the
+    # shield charges it at the last feasible moment, which is also the cheapest
+    # -- and that is what the plain policy was measured to do (0.2-3% of the
+    # energy requested). Cuts for the cap are not penalised: asking early for
+    # more than fits does not put a deadline at risk. 0 switches it off.
+    forced_charge_penalty: float = 0.0
+
 
 @dataclass
 class LagrangianConfig:

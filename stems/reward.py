@@ -87,7 +87,8 @@ class STEMSReward:
             return (t_heat - t_in) ** 2
         return 0.0
 
-    def _ev_service_penalty(self, obs_i: np.ndarray, next_i: np.ndarray) -> float:
+    def _ev_service_penalty(self, obs_i: np.ndarray, next_i: np.ndarray,
+                            departed: Optional[List[dict]] = None) -> float:
         """Penalty for a vehicle short of its departure requirement.
 
         Two components. The *departure* term fires on the step a connected
@@ -97,6 +98,14 @@ class STEMSReward:
         which keeps the signal from arriving only once per trip; without it the
         credit assignment over a ten-hour parking window is extremely sparse.
 
+        ``departed`` is the simulator's record of the vehicles that left this
+        building in the hour just simulated (``STEMSEnvironment.ev_departures``:
+        the state of charge they left with). The observations cannot give that:
+        the charge delivered in a car's last connected hour is never observed, so
+        the state of charge read here is the one at the *start* of that hour and
+        a car charged correctly in its last hour would be penalised as short.
+        Without ``departed`` (the mock environment) the observation is used.
+
         Returns 0 when the schema has no charger, so building-only runs are
         numerically identical to before this term existed.
         """
@@ -105,11 +114,15 @@ class STEMSReward:
             return 0.0
         was_connected = float(obs_i[L["connected_state"]]) > 0.5
         now_connected = float(next_i[L["connected_state"]]) > 0.5
-        if not was_connected:
-            return 0.0
         soc = float(obs_i[L["soc"]])
         required = float(obs_i[L["required_soc_departure"]])
         shortfall = max(required - soc, 0.0)
+        if departed is not None:
+            left_short = sum(max(float(d["required_soc"]) - float(d["soc"]), 0.0) for d in departed)
+            shaping = self.cfg.ev_shaping * shortfall if was_connected and now_connected else 0.0
+            return self.cfg.ev_service * left_short + shaping
+        if not was_connected:
+            return 0.0
         if not now_connected:
             return self.cfg.ev_service * shortfall      # departed short
         return self.cfg.ev_shaping * shortfall          # still time to fix it
@@ -121,6 +134,7 @@ class STEMSReward:
         actions: np.ndarray,
         next_obs_list: List[np.ndarray],
         prev_net_consumption: Optional[List[float]] = None,
+        ev_departures: Optional[List[dict]] = None,
     ) -> List[float]:
         """Per-building rewards for the hour ``t`` the actions were applied to.
 
@@ -136,6 +150,8 @@ class STEMSReward:
         actions   : (B, action_dim)
         next_obs_list : B post-action observations (hour t outcomes)
         prev_net_consumption : net consumption of hour t-1 per building
+        ev_departures : the simulator's record of the vehicles that left in hour t
+            (``building``, ``soc``, ``required_soc``); None when unavailable
 
         Returns
         -------
@@ -184,7 +200,9 @@ class STEMSReward:
                     r_renew = self.cfg.xi * min(solar_i / max(load_i, 1e-8), 1.0)
 
             # EV service. Zero when the schema exposes no charger.
-            r_ev = -self._ev_service_penalty(cond_i, next_i)
+            departed = (None if ev_departures is None
+                        else [d for d in ev_departures if int(d["building"]) == i])
+            r_ev = -self._ev_service_penalty(cond_i, next_i, departed)
 
             rewards.append(r_econ + r_stab + r_comfort + r_renew + r_ev)
 

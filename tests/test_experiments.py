@@ -157,10 +157,18 @@ def test_the_ablation_arms():
         "rl+calibrated": ("rl", "calibrated"),
         "rl-res+calibrated": ("rl", "calibrated"),
         "rl+calibrated+pen": ("rl", "calibrated"),
+        "rbc-offpeak+calibrated": ("rbc", "calibrated"),
+        "rbc-never+calibrated": ("rbc", "calibrated"),
+        "rl+calibrated+own": ("rl", "calibrated"),
+        "hp-shift": ("hp-shift", "none"),
+        "rl-hp": ("rl", "none"),
     }
     assert [n for n, a in ARMS.items() if a.learns] == [
-        "rl", "rl+basic", "rl+calibrated", "rl-res+calibrated", "rl+calibrated+pen"]
+        "rl", "rl+basic", "rl+calibrated", "rl-res+calibrated", "rl+calibrated+pen",
+        "rl+calibrated+own", "rl-hp"]
     assert ARMS["rl-res+calibrated"].residual and ARMS["rl+calibrated+pen"].penalty > 0
+    assert ARMS["rl+calibrated+own"].forced_penalty > 0 and ARMS["rl+calibrated"].forced_penalty == 0
+    assert ARMS["rl-hp"].control == ("cooling_or_heating_device",)
 
 
 @pytest.fixture(scope="module")
@@ -269,6 +277,49 @@ def test_penalty_arm_sets_the_intervention_weight(mock_env):
     cfg2 = _config()
     build_controller(ARMS["rl+calibrated"], mock_env, cfg2)
     assert cfg2.training.intervention_penalty == 0.0
+
+
+def test_own_arm_sets_the_forced_charging_weight(mock_env):
+    cfg = _config()
+    build_controller(ARMS["rl+calibrated+own"], mock_env, cfg)
+    assert cfg.training.forced_charge_penalty == ARMS["rl+calibrated+own"].forced_penalty
+    cfg2 = _config()
+    build_controller(ARMS["rl+calibrated"], mock_env, cfg2)
+    assert cfg2.training.forced_charge_penalty == 0.0
+
+
+def test_heat_pump_only_policy_drives_the_heat_pump_and_nothing_else(mock_env):
+    from stems.utils import HistoryBuffer
+
+    cfg = _config()
+    agent = build_controller(ARMS["rl-hp"], mock_env, cfg)
+    hvac = mock_env.hvac_action_index
+    assert agent.control_indices == [hvac] and not agent.use_cbf
+    obs, _ = mock_env.reset()
+    hist = HistoryBuffer(mock_env.num_buildings, mock_env.obs_dim, cfg.transformer.window_size)
+    hist.update(obs)
+    a = agent.select_action(obs, hist.get(), explore=True)
+    others = [i for i in range(mock_env.action_dim) if i != hvac]
+    assert np.all(a[:, others] == 0.0)
+
+
+def test_car_request_modes_of_the_rule():
+    from experiments.controllers import EVRule
+
+    layout = {"connected_state": 0, "soc": 1, "required_soc_departure": 2, "departure_time": 3}
+
+    def obs(hour):
+        o = np.zeros(30)
+        o[0], o[2], o[3] = 1.0, 0.8, 5.0          # connected, needs 0.8
+        o[1] = hour                                # CityLearn hour, and the car's state of charge
+        return [o]
+    ask = lambda mode, hour: float(EVRule(None, 2, 1, {**layout, "soc": 4}, ev_request=mode)
+                                   .select_action(obs(hour))[0, 1])
+    assert ask("asap", 18) == 1.0 and ask("asap", 23) == 1.0
+    assert ask("offpeak", 18) == 0.0 and ask("offpeak", 23) == 1.0      # 17..21 is the tariff peak
+    assert ask("never", 18) == 0.0 and ask("never", 23) == 0.0
+    with pytest.raises(ValueError):
+        EVRule(None, 2, 1, layout, ev_request="sometimes")
 
 
 # ===========================================================================

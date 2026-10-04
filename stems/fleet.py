@@ -249,6 +249,10 @@ class FleetState:
     base: np.ndarray
     cap: float
     price: Optional[np.ndarray] = None
+    # Cap the programme plans the *later* hours against (None: the same as
+    # ``cap``). A forecast of the hours ahead is wrong by more than the forecast
+    # of this hour, so a plan that leans on them needs the wider margin.
+    cap_later: Optional[float] = None
 
     def __post_init__(self) -> None:
         self.connected = np.asarray(self.connected, dtype=bool).reshape(-1)
@@ -496,7 +500,8 @@ def schedule(model: EVFleetModel, state: FleetState, requested_kw: Optional[np.n
         row = np.zeros(nvar)
         for j in range(n):
             row[iy(j, k)] = 1.0
-        budget = state.cap - float(np.maximum(state.base[k, others], 0.0).sum())
+        cap_k = state.cap if k == 0 or state.cap_later is None else float(state.cap_later)
+        budget = cap_k - float(np.maximum(state.base[k, others], 0.0).sum())
         # The EV buildings' own base import is unavoidable too: the budget can
         # never be below it, or the programme would be infeasible for a reason no
         # charging decision can change.
@@ -621,6 +626,12 @@ class BaseLoadForecaster:
     ``window`` one-hour-ahead errors of the neighbourhood import (an online
     conformal margin): the share of hours whose realised import exceeds the
     forecast-plus-margin then tracks ``1 - quantile``.
+
+    ``later_margin`` is the same quantile for the rows the shield *plans* on: the
+    later hours are forecast by the same hour of the previous day, and that error
+    (import now minus import 24 h ago) is larger than the one-hour-ahead one. A
+    shield that defers charging to the last feasible hour is betting on those
+    rows, so they carry their own margin.
     """
 
     def __init__(self, num_buildings: int, replay: Optional[np.ndarray] = None,
@@ -644,6 +655,7 @@ class BaseLoadForecaster:
         self._now_known = np.zeros(self.B)
         self._remainders: List[np.ndarray] = []      # realised base - observed - known, per hour
         self.errors: List[float] = []
+        self.day_errors: List[float] = []            # import now - import 24 h earlier
 
     def _exogenous(self, obs_list: Sequence[np.ndarray]) -> np.ndarray:
         return np.array([float(o[self.load_index]) - float(o[self.solar_index])
@@ -699,6 +711,9 @@ class BaseLoadForecaster:
         if self._last_prediction is not None:
             self.errors.append(float(np.maximum(realised, 0.0).sum()
                                      - np.maximum(self._last_prediction, 0.0).sum()))
+        if self.replay is None and len(self.history) >= 24:
+            self.day_errors.append(float(np.maximum(realised, 0.0).sum()
+                                         - np.maximum(self.history[-24], 0.0).sum()))
         self.history.append(realised)
         if self.replay is None:
             self._prev_exogenous = getattr(self, "_now_exogenous", None)
@@ -714,6 +729,17 @@ class BaseLoadForecaster:
             return 0.0
         recent = np.asarray(self.errors[-self.window:])
         return float(max(np.quantile(recent, self.quantile), 0.0))
+
+    @property
+    def later_margin(self) -> float:
+        """Head-room reserve for the hours after this one [kW]: the quantile of the
+        day-ahead forecast's errors, never less than ``margin``. Falls back to
+        ``margin`` until a day of such errors exists."""
+        now = self.margin
+        if self.replay is not None or len(self.day_errors) < 24:
+            return now
+        recent = np.asarray(self.day_errors[-self.window:])
+        return float(max(np.quantile(recent, self.quantile), now))
 
 
 # ---------------------------------------------------------------------------
@@ -794,7 +820,21 @@ class FleetShield:
     ``reserve_hours`` plans every departure that many hours early. A shield that
     defers charging to the last feasible hour has no room left when its forecast
     of the house load turns out wrong; with perfect foresight the reserve is not
-    needed, with a causal forecast one hour buys the guarantee back.
+    needed, with a causal forecast one hour buys the guarantee back. A departure
+    planned ``r`` hours early must still hold when the car actually leaves, so the
+    requirement at the planned hour is raised by the standby loss of the hours it
+    then stands idle (``target / (1 - loss)^r``). Without that the reserve
+    creates the misses it is there to prevent: the car is at its requirement an
+    hour early and 0.3% under it at the door.
+
+    ``lead_margin=True`` plans the later hours against ``cap - later_margin``
+    (see ``BaseLoadForecaster.later_margin``) instead of the one-hour-ahead
+    margin. It is what makes a deferred plan hold when the forecast it rests on
+    is the day-ahead one.
+
+    After ``project``, ``last["forced_kw"]`` is, per building, the charging the
+    shield added above the request (its deadline rescue) and ``last["cut_kw"]``
+    what it took off (the cap).
 
     ``house`` (``HouseStorage``) puts the stationary batteries and hot-water
     tanks under the same cap. The vehicles are then planned around what those
@@ -807,7 +847,8 @@ class FleetShield:
     def __init__(self, model: EVFleetModel, layout: Dict[str, int], ev_action_index: int,
                  cap_kw: float, rule: str, forecaster: BaseLoadForecaster,
                  horizon: int = 24, guard_deadlines: bool = True,
-                 reserve_hours: int = 0, house: Optional[HouseStorage] = None) -> None:
+                 reserve_hours: int = 0, house: Optional[HouseStorage] = None,
+                 lead_margin: bool = False) -> None:
         if rule not in RULES:
             raise ValueError(f"unknown rule {rule!r}; choose from {RULES}")
         self.model, self.layout, self.idx = model, dict(layout), int(ev_action_index)
@@ -818,6 +859,7 @@ class FleetShield:
             raise ValueError("house storage needs the causal forecast: a replayed load "
                              "already contains what it draws")
         self.house = house
+        self.lead_margin = bool(lead_margin)
         self.last: Dict[str, Any] = {}
 
     def state(self, obs_list: Sequence[np.ndarray],
@@ -825,11 +867,20 @@ class FleetShield:
         col = lambda key: np.array([float(o[self.layout[key]]) for o in obs_list])
         connected = (col("connected_state") > 0.5) & self.model.has_ev
         base = self.forecaster.predict(obs_list, self.horizon, known_kw)
+        hours_left = np.where(connected, col("departure_time") + 1, 0).astype(np.int64)
+        slots = np.where(connected, np.maximum(hours_left - self.reserve, 1), 0)
+        # Hours the car stands idle between the planned completion and its real
+        # departure: the planned requirement is raised by their standby loss.
+        idle = np.maximum(hours_left - slots, 0)
+        keep = 1.0 - self.model.battery.loss
+        target = np.where(connected,
+                          np.minimum(col("required_soc_departure") / keep ** idle, 1.0), 0.0)
+        margin = self.forecaster.margin
+        cap_later = (self.cap - max(margin, self.forecaster.later_margin)
+                     if self.lead_margin else None)
         return FleetState(connected=connected, soc=np.where(connected, col("soc"), 0.0),
-                          target=np.where(connected, col("required_soc_departure"), 0.0),
-                          slots=np.where(connected, np.maximum(
-                              col("departure_time") + 1 - self.reserve, 1), 0),
-                          base=base, cap=self.cap - self.forecaster.margin)
+                          target=target, slots=slots, base=base, cap=self.cap - margin,
+                          cap_later=cap_later)
 
     def project(self, actions: np.ndarray, obs_list: Sequence[np.ndarray]) -> np.ndarray:
         actions = np.asarray(actions, dtype=np.float32).copy()
@@ -851,6 +902,7 @@ class FleetShield:
             return actions
         # Everything below is in grid draw [kW]: what the cap counts.
         requested = self.model.draw_kw(state.soc, asked)
+        asked_kw = requested.copy()
         report: Dict[str, Any] = {"margin_kw": self.forecaster.margin}
         if self.rule == "lp":
             sol = schedule_executable(self.model, state, requested, objective="project")
@@ -867,6 +919,8 @@ class FleetShield:
             kw = allocate(self.model, state, requested, self.rule)
             report.update(binding=bool(kw.sum() < requested.sum() - 1e-9))
         kw = apply_dead_band(self.model, state, kw)
+        report["forced_kw"] = np.maximum(kw - asked_kw, 0.0)
+        report["cut_kw"] = np.maximum(asked_kw - kw, 0.0)
         house_kw = state.base[0]
         if self.house is not None:
             others = state.base[0] - discharge + kw      # everything but battery and tank

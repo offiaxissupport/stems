@@ -185,22 +185,26 @@ def main() -> None:
     reserve_path = root / "reserve.json"
     if reserve_path.exists():
         rows = load(reserve_path)
-        out.append("## Causal forecast: planning every departure early\n")
-        keys = [(p, r, h) for p in ("asap", "none") for r in ("llf", "lp") for h in (0, 1, 2)]
-        lab = lambda k: f"{k[0]} + {RULE_LABEL[k[1]]}, reserve {k[2]} h"
+        out.append("## Causal forecast: planning every departure early, and the later-hours margin\n")
+        keys = [(p, r, h, m) for p in ("asap", "none") for r in ("llf", "lp") for m in (False, True)
+                for h in (0, 1, 2)]
+        lab = lambda k: (f"{k[0]} + {RULE_LABEL[k[1]]}, reserve {k[2]} h"
+                         + (", later-hours margin" if k[3] else ""))
         for value, title, fmt in (("missed_rate", "Missed departures", ".3f"),
                                   ("unserved_kwh", "Energy not delivered [kWh]", ".1f"),
                                   ("avoidable_exceed_kwh", "Energy over the cap caused by charging [kWh]", ".1f"),
                                   ("cost", "Neighbourhood cost", ".0f")):
-            out.append(table(title, pivot(rows, lambda r: (r["policy"], r["rule"], r.get("reserve", 0)),
+            out.append(table(title, pivot(rows, lambda r: (r["policy"], r["rule"], r.get("reserve", 0),
+                                                           bool(r.get("lead", False))),
                                           value), keys, fmt, lab))
-        deferred = [r for r in rows if r["policy"] == "none"]
+        deferred = [r for r in rows if r["policy"] == "none" and r["rule"] == "lp"]
+        tag = lambda r: f"{r.get('reserve', 0)}{'m' if r.get('lead') else ''}"
         line_plot(figs / "ev_reserve.png",
-                  "Deferred charging under a causal forecast: energy not delivered",
-                  "kWh per 14-day window",
-                  pivot(deferred, lambda r: f"{r['rule']}{r.get('reserve', 0)}", "unserved_kwh"),
-                  [f"{r}{h}" for r in ("llf", "lp") for h in (0, 1, 2)],
-                  {f"{r}{h}": f"{RULE_LABEL[r]}, reserve {h} h" for r in ("llf", "lp") for h in (0, 1, 2)})
+                  "Deferred charging under a causal forecast: energy not delivered (LP shield)",
+                  "kWh per 14-day window", pivot(deferred, tag, "unserved_kwh"),
+                  [f"{h}{m}" for m in ("", "m") for h in (0, 1, 2)],
+                  {f"{h}{m}": f"reserve {h} h" + (", later-hours margin" if m else "")
+                   for m in ("", "m") for h in (0, 1, 2)})
 
     text = "\n".join(out)
     (root / "report.md").write_text(text, encoding="utf-8")
