@@ -1,0 +1,29 @@
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+[ablation] 8 runs in grid, 8 to do, workers=6
+[ablation] 1/8 ok    verified=True     36.7s  C:\Users\medya\stems\results\pilot_v1\tx_travis_8b__winter28d__refn8__cap300-80\rbc__seed0.json
+[ablation] 2/8 ok    verified=True     37.3s  C:\Users\medya\stems\results\pilot_v1\tx_travis_8b__winter28d__refn8__cap300-80\rbc+calibrated__seed0.json
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================

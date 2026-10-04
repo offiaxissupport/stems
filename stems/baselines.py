@@ -23,12 +23,17 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
+from stems.environment import thermostat_step
+
 # Observation indices (matching OBS_NAMES in environment.py)
 _IDX_HOUR = 1
 _IDX_PRICE = 21
 _IDX_SOC_ELEC = 19
-_IDX_OCCUPANT = 26
 _IDX_T_IN = 15
+_IDX_LOAD = 16        # non_shiftable_load
+_IDX_SOLAR = 17       # solar_generation
+_IDX_T_COOL = 27     # indoor_dry_bulb_temperature_cooling_set_point
+_IDX_T_HEAT = 28     # indoor_dry_bulb_temperature_heating_set_point (heat_pump=True only)
 _IDX_NET = 20
 
 
@@ -37,17 +42,72 @@ _IDX_NET = 20
 # ==========================================================================
 
 class RuleBasedAgent:
-    """Time-of-Use heuristic control.
+    """Time-of-Use storage schedule plus a thermostat.
 
-    Strategy:
-        - Electrical storage: charge during off-peak hours [0, 6],
-          discharge during peak hours [16, 21].
-        - DHW storage: mirror electrical storage schedule.
-        - Cooling: reduce (mild mode) when building is unoccupied.
+    Storage (hours are CityLearn's 1..24; the tariff peaks in hours 17-21):
+
+    * charge the battery and the hot-water tank in the hours before the peak
+      (11-16), when PV is also producing;
+    * during the peak, discharge the battery only as far as the house's own
+      non-shiftable load net of PV -- exports earn nothing under this tariff, so
+      discharging faster than the house consumes gives energy away -- and let
+      the tank serve the hot-water demand.
+
+    A fixed 0.8 discharge regardless of load, with overnight charging, costs
+    *more* than leaving the storage idle (515 vs 454 over a winter week on the
+    Travis houses): most of the discharge is exported for nothing and the tank
+    is heated every night whether or not it is needed.
+
+    Heat pump: hold the comfort band with the integral thermostat of
+    ``stems.environment.thermostat_step`` and no set-point offset.
+    ``hvac_control`` must match the environment's: in ``"setpoint"`` mode the
+    environment runs the thermostat and the HVAC action is a zero offset; in
+    ``"power"`` mode the baseline runs the identical loop itself. CityLearn reads
+    the power action by sign: positive heats, negative cools. The thermostat
+    needs the heating set point (``heat_pump=True`` observations).
+
+    ``battery_nominal_power`` (kW per building, from ``env.battery_info()``)
+    converts the load into a battery action; it is required for the
+    load-following discharge.
     """
 
-    def __init__(self, num_buildings: int = 3) -> None:
+    CHARGE_HOURS = range(11, 17)      # 10:00-16:00, the six hours before the peak
+    PEAK_HOURS = range(17, 22)        # 16:00-21:00
+    CHARGE_ACTION = 0.5
+    DHW_CHARGE_ACTION = 0.3
+    DHW_DISCHARGE_ACTION = -0.5
+
+    def __init__(self, num_buildings: int = 3, hvac_control: str = "power",
+                 battery_nominal_power: Optional[np.ndarray] = None) -> None:
+        if hvac_control not in ("power", "setpoint"):
+            raise ValueError(f"hvac_control must be 'power' or 'setpoint', got {hvac_control!r}")
         self.B = num_buildings
+        self.hvac_control = hvac_control
+        self.p_batt = (None if battery_nominal_power is None
+                       else np.asarray(battery_nominal_power, dtype=np.float32).reshape(-1))
+        self.reset()
+
+    def reset(self) -> None:
+        """Clear the thermostat state at the start of an episode."""
+        self._u = np.zeros(self.B, dtype=np.float32)
+
+    def notify_executed(self, executed: np.ndarray, hvac_idx: int = 2) -> None:
+        """Anti-windup: if a safety layer changed the power command, integrate from
+        what was actually executed, not from what was asked for."""
+        if self.hvac_control == "power":
+            self._u = np.asarray(executed, dtype=np.float32)[:, hvac_idx].copy()
+
+    def _hvac_actions(self, obs_list: List[np.ndarray]) -> np.ndarray:
+        if self.hvac_control == "setpoint":
+            return np.zeros(self.B, dtype=np.float32)
+        if any(len(o) <= _IDX_T_HEAT for o in obs_list):
+            raise ValueError(
+                "RuleBasedAgent's thermostat needs the heating set point, which is only "
+                "observed with STEMSEnvironment(heat_pump=True).")
+        col = lambda idx: np.array([o[idx] for o in obs_list], dtype=np.float32)
+        self._u = thermostat_step(self._u, col(_IDX_T_IN), col(_IDX_T_HEAT), col(_IDX_T_COOL),
+                                  np.zeros(self.B, dtype=np.float32))
+        return self._u
 
     def select_action(
         self,
@@ -55,31 +115,27 @@ class RuleBasedAgent:
         history: Optional[np.ndarray] = None,
         explore: bool = False,
     ) -> np.ndarray:
-        """Return (B, 3) actions based on TOU schedule."""
+        """Return (B, 3) actions: TOU storage schedule and the thermostat."""
+        if self.p_batt is None:
+            raise ValueError("RuleBasedAgent needs battery_nominal_power "
+                             "(env.battery_info()['nominal_power']) for its "
+                             "load-following discharge")
         actions = np.zeros((self.B, 3), dtype=np.float32)
+        hvac = self._hvac_actions(obs_list)
 
         for i, obs in enumerate(obs_list):
-            hour = int(obs[_IDX_HOUR])
-            occupant = float(obs[_IDX_OCCUPANT])
-
-            # Electrical storage action (index 1)
-            if 0 <= hour <= 6:
-                elec_action = 0.8    # charge
-            elif 16 <= hour <= 21:
-                elec_action = -0.8   # discharge
+            hour = int(round(float(obs[_IDX_HOUR])))
+            if hour in self.CHARGE_HOURS:
+                elec_action, dhw_action = self.CHARGE_ACTION, self.DHW_CHARGE_ACTION
+            elif hour in self.PEAK_HOURS:
+                # This hour's non-shiftable load net of PV: what the battery can
+                # displace without exporting.
+                residual = max(float(obs[_IDX_LOAD]) - float(obs[_IDX_SOLAR]), 0.0)
+                elec_action = -min(residual / max(float(self.p_batt[i]), 1e-6), 1.0)
+                dhw_action = self.DHW_DISCHARGE_ACTION
             else:
-                elec_action = 0.0
-
-            # DHW storage action (index 0) – similar pattern
-            dhw_action = elec_action * 0.5
-
-            # Cooling action (index 2) – reduce if unoccupied
-            if occupant == 0:
-                cool_action = -0.3   # mild cooling (save energy)
-            else:
-                cool_action = 0.2    # normal cooling
-
-            actions[i] = [dhw_action, elec_action, cool_action]
+                elec_action, dhw_action = 0.0, 0.0
+            actions[i] = [dhw_action, elec_action, hvac[i]]
 
         return actions
 

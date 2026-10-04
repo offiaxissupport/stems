@@ -1,0 +1,23 @@
+10:15:13 train tx_travis_8b__winter28d__refn8__cap300-80 arm=rl+calibrated seed=0 episodes=20
+10:16:29 ep 1/20 reward=-909.7 violating_steps=0.000 grad_steps=0 (52.4s)
+10:18:00 ep 2/20 reward=-882.1 violating_steps=0.000 grad_steps=110 (90.5s)
+10:19:28 ep 3/20 reward=-888.4 violating_steps=0.000 grad_steps=110 (88.3s)
+10:20:55 ep 4/20 reward=-866.8 violating_steps=0.000 grad_steps=108 (87.5s)
+10:21:58 ep 5/20 reward=-904.8 violating_steps=0.000 grad_steps=26 (63.1s)
+10:23:05 ep 6/20 reward=-816.2 violating_steps=0.000 grad_steps=33 (66.3s)
+10:24:10 ep 7/20 reward=-839.2 violating_steps=0.000 grad_steps=33 (65.1s)
+10:25:20 ep 8/20 reward=-801.2 violating_steps=0.000 grad_steps=53 (70.1s)
+10:26:59 ep 9/20 reward=-824.8 violating_steps=0.000 grad_steps=36 (99.2s)
+10:28:43 ep 10/20 reward=-785.5 violating_steps=0.000 grad_steps=60 (104.4s)
+10:30:19 ep 11/20 reward=-767.4 violating_steps=0.000 grad_steps=62 (95.4s)
+10:31:47 ep 12/20 reward=-780.6 violating_steps=0.000 grad_steps=51 (88.6s)
+10:33:10 ep 13/20 reward=-763.7 violating_steps=0.000 grad_steps=35 (82.8s)
+10:34:37 ep 14/20 reward=-708.6 violating_steps=0.000 grad_steps=51 (87.1s)
+10:36:27 ep 15/20 reward=-726.7 violating_steps=0.000 grad_steps=33 (109.6s)
+10:37:30 ep 16/20 reward=-734.9 violating_steps=0.000 grad_steps=22 (63.3s)
+10:39:04 ep 17/20 reward=-755.1 violating_steps=0.000 grad_steps=55 (94.3s)
+10:40:28 ep 18/20 reward=-662.4 violating_steps=0.000 grad_steps=26 (83.2s)
+10:41:45 ep 19/20 reward=-691.3 violating_steps=0.000 grad_steps=32 (76.9s)
+10:43:15 ep 20/20 reward=-670.3 violating_steps=0.000 grad_steps=59 (90.3s)
+10:43:15 evaluate
+10:44:33 done verified=None violation=0.0000 cost=2189.6

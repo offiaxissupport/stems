@@ -1,0 +1,61 @@
+{
+  "meta": {
+    "env_type": "CityLearn",
+    "steps": 800,
+    "seeds": [
+      0,
+      1
+    ],
+    "paper_target": 0.056
+  },
+  "results": {
+    "no_cbf (raw policy)": {
+      "violation_rate": 0.719453125,
+      "soc_rate": 0.719453125,
+      "power_rate": 0.0,
+      "grid_rate": 0.0,
+      "cost": 7675.85010596551,
+      "violation_std": 0.009140625000000013
+    },
+    "cbf, OLD dSOC=0.1 (the bug)": {
+      "violation_rate": 0.09453125000000001,
+      "soc_rate": 0.09453125000000001,
+      "power_rate": 0.0,
+      "grid_rate": 0.0,
+      "cost": 7777.068628132343,
+      "violation_std": 0.0003125000000000003
+    },
+    "cbf + real calibration": {
+      "violation_rate": 0.011015625000000001,
+      "soc_rate": 0.011015625000000001,
+      "power_rate": 0.0,
+      "grid_rate": 0.0,
+      "cost": 7703.315476246178,
+      "violation_std": 0.0003906249999999995
+    },
+    "+ robust margins": {
+      "violation_rate": 0.0,
+      "soc_rate": 0.0,
+      "power_rate": 0.0,
+      "grid_rate": 0.0,
+      "cost": 7704.715185299516,
+      "violation_std": 0.0
+    },
+    "+ anticipatory": {
+      "violation_rate": 0.0,
+      "soc_rate": 0.0,
+      "power_rate": 0.0,
+      "grid_rate": 0.0,
+      "cost": 7661.678571309894,
+      "violation_std": 0.0
+    },
+    "FULL (all tricks)": {
+      "violation_rate": 0.0,
+      "soc_rate": 0.0,
+      "power_rate": 0.0,
+      "grid_rate": 0.0,
+      "cost": 7649.289278313518,
+      "violation_std": 0.0
+    }
+  }
+}

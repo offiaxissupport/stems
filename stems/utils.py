@@ -103,6 +103,12 @@ class EpisodeBuffer:
         self._next_history: List[np.ndarray] = []
         # Constraint cost signals (B, K) per step – k=0 SOC, k=1 building power, k=2 grid
         self._constraint_costs: List[np.ndarray] = []
+        # Behaviour-policy record taken when the action was sampled: the
+        # pre-squash Gaussian sample z (a = tanh z) and log N(z; mu, sigma). The
+        # PPO importance ratio needs exactly these; recomputing them later from
+        # an updated network or normaliser gives a policy that never acted.
+        self._pre_tanh: List[np.ndarray] = []
+        self._behaviour_log_probs: List[np.ndarray] = []
 
     def add(
         self,
@@ -116,6 +122,8 @@ class EpisodeBuffer:
         raw_actions: Optional[np.ndarray] = None,
         safe_actions: Optional[np.ndarray] = None,
         constraint_costs: Optional[np.ndarray] = None,
+        pre_tanh: Optional[np.ndarray] = None,
+        behaviour_log_probs: Optional[np.ndarray] = None,
     ) -> None:
         self._obs.append(obs)
         self._actions.append(actions)
@@ -131,6 +139,10 @@ class EpisodeBuffer:
             self._next_history.append(next_history)
         if constraint_costs is not None:
             self._constraint_costs.append(constraint_costs)
+        if pre_tanh is not None:
+            self._pre_tanh.append(np.asarray(pre_tanh, dtype=np.float32))
+        if behaviour_log_probs is not None:
+            self._behaviour_log_probs.append(np.asarray(behaviour_log_probs, dtype=np.float32))
 
     def __len__(self) -> int:
         return len(self._obs)
@@ -152,6 +164,9 @@ class EpisodeBuffer:
         if self._constraint_costs:
             # shape (N, B, K): timestep × building × constraint
             batch["constraint_costs"] = np.array(self._constraint_costs)
+        if self._pre_tanh:
+            batch["pre_tanh"] = np.array(self._pre_tanh)                      # (N, B, A)
+            batch["behaviour_log_probs"] = np.array(self._behaviour_log_probs)  # (N, B)
         return batch
 
 

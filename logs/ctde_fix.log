@@ -1,0 +1,52 @@
+[ctde] schema=citylearn_schemas/tx_travis_8b_ev/schema.json
+[ctde] episodes=10 steps=800 seeds=[0] caps=[30.0]
+[ctde] one knob: graph adjacency on (CTDE-like) vs zeroed (DTDE).
+[ctde] shield coordination=independent, so coordination must be learned.
+[ctde] NOTE: vehicle schedules are synthetic; buildings are real.
+
+[ctde] cap=30kW graph=on  seed=0
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+      ep  1/10  reward=    325.9  viol=0.089  |a|=0.569  above_deadband=0.417  (37s)
+      ep  2/10  reward=    322.6  viol=0.069  |a|=0.556  above_deadband=0.451  (44s)
+      ep  3/10  reward=    325.6  viol=0.089  |a|=0.537  above_deadband=0.443  (36s)
+      ep  4/10  reward=    322.3  viol=0.079  |a|=0.525  above_deadband=0.442  (37s)
+      ep  5/10  reward=    326.3  viol=0.077  |a|=0.517  above_deadband=0.441  (38s)
+      ep  6/10  reward=    329.3  viol=0.066  |a|=0.512  above_deadband=0.429  (38s)
+      ep  7/10  reward=    328.0  viol=0.070  |a|=0.514  above_deadband=0.433  (39s)
+      ep  8/10  reward=    327.0  viol=0.066  |a|=0.515  above_deadband=0.426  (41s)
+      ep  9/10  reward=    335.3  viol=0.065  |a|=0.507  above_deadband=0.419  (39s)
+      ep 10/10  reward=    338.1  viol=0.070  |a|=0.507  above_deadband=0.422  (39s)
+      -> missed 3/156 (0.019)  viol=0.124  peak=68.6  cost=2481
+
+[ctde] cap=30kW graph=off seed=0
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+      ep  1/10  reward=    325.4  viol=0.084  |a|=0.568  above_deadband=0.417  (38s)
+      ep  2/10  reward=    322.6  viol=0.069  |a|=0.556  above_deadband=0.451  (39s)
+      ep  3/10  reward=    325.6  viol=0.091  |a|=0.536  above_deadband=0.442  (45s)
+      ep  4/10  reward=    322.4  viol=0.079  |a|=0.524  above_deadband=0.442  (46s)
+      ep  5/10  reward=    326.6  viol=0.077  |a|=0.516  above_deadband=0.441  (43s)
+      ep  6/10  reward=    329.5  viol=0.066  |a|=0.512  above_deadband=0.428  (42s)
+      ep  7/10  reward=    327.9  viol=0.070  |a|=0.514  above_deadband=0.433  (45s)
+      ep  8/10  reward=    327.0  viol=0.066  |a|=0.514  above_deadband=0.426  (43s)
+      ep  9/10  reward=    335.3  viol=0.065  |a|=0.508  above_deadband=0.420  (47s)
+      ep 10/10  reward=    337.9  viol=0.071  |a|=0.508  above_deadband=0.422  (53s)
+      -> missed 3/156 (0.019)  viol=0.124  peak=68.6  cost=2481
+
+
+==============================================================================
+   cap  graph   missed rate     viol     peak       cost
+------------------------------------------------------------------------------
+    30     on 0.019+/-0.000    0.124     68.6       2481
+    30    off 0.019+/-0.000    0.124     68.6       2481
+==============================================================================
+[ctde] wrote C:/Users/medya/AppData/Local/Temp/ctde_fix.json

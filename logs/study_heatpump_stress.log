@@ -1,0 +1,72 @@
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+[study] real CityLearn | isolate=thermal | policy=reactive | steps=1500 | seeds=[0]
+[study] simulator patches active: ['dhw_storage_capacity']
+[study] DHW calibration (per building):
+   b0: tank=  6.76 kWh  heater= 5.86 kW  charge_rate=0.854 SOC/h  time_to_heat=1.17 h
+   b1: tank=  7.28 kWh  heater= 5.73 kW  charge_rate=0.722 SOC/h  time_to_heat=1.39 h
+   b2: tank=  7.59 kWh  heater= 4.06 kW  charge_rate=0.522 SOC/h  time_to_heat=1.92 h
+   b3: tank= 10.16 kWh  heater= 6.76 kW  charge_rate=0.620 SOC/h  time_to_heat=1.61 h
+   b4: tank=  6.56 kWh  heater= 4.15 kW  charge_rate=0.602 SOC/h  time_to_heat=1.66 h
+   b5: tank= 11.17 kWh  heater= 6.92 kW  charge_rate=0.590 SOC/h  time_to_heat=1.70 h
+   b6: tank= 10.99 kWh  heater= 7.37 kW  charge_rate=0.631 SOC/h  time_to_heat=1.58 h
+   b7: tank= 11.20 kWh  heater= 6.41 kW  charge_rate=0.563 SOC/h  time_to_heat=1.78 h
+[study] mean time-to-heat = 1.60 h -> a pre-heat horizon of L>=2 is the physically motivated choice
+
+[study] STRESS: observed T_out -18.0 degC with a -4.0 degC/h forecast front, per-building cap 2 kW (nominal 80 kW)
+
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+no pre-heat (reactive)         ready=0.895+/-0.000 covered=0.939 deficit=  1163.5kWh  cost=  3021.6  dhw_kwh=  196.2  $/kWh=0.2200  viol=0.240
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
++ CoP-aware power guard        ready=0.895+/-0.000 covered=0.939 deficit=  1163.5kWh  cost=  3008.2  dhw_kwh=  196.2  $/kWh=0.2200  viol=0.239
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+pre-heat L=1                   ready=0.919+/-0.000 covered=0.951 deficit=   734.7kWh  cost=  3013.1  dhw_kwh=  205.7  $/kWh=0.2307  viol=0.239
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+pre-heat L=2                   ready=0.961+/-0.000 covered=0.961 deficit=   103.2kWh  cost=  3021.4  dhw_kwh=  227.1  $/kWh=0.2459  viol=0.239
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+pre-heat L=3                   ready=0.991+/-0.000 covered=0.973 deficit=    33.2kWh  cost=  3028.9  dhw_kwh=  255.9  $/kWh=0.3127  viol=0.240
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
++ weather anticipation (L=2)   ready=0.986+/-0.000 covered=0.969 deficit=    60.2kWh  cost=  3024.9  dhw_kwh=  237.6  $/kWh=0.2550  viol=0.239
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+FULL (L=2, weather + CoP)      ready=0.991+/-0.000 covered=0.974 deficit=    43.5kWh  cost=  3028.3  dhw_kwh=  250.0  $/kWh=0.2591  viol=0.239
+
+[study] wrote heatpump_study_stress.json

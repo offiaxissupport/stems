@@ -1,0 +1,601 @@
+{
+  "meta": {
+    "schema": "citylearn_schemas/tx_travis_8b_ev/schema.json",
+    "episodes": 8,
+    "steps": 1200,
+    "seeds": [
+      0,
+      1
+    ],
+    "caps": [
+      80.0,
+      30.0
+    ],
+    "shield_coordination": "independent",
+    "ev_schedules": "synthetic"
+  },
+  "summary": [
+    {
+      "cap_kw": 80.0,
+      "graph": "on",
+      "n_seeds": 2,
+      "missed_departure_rate": 0.9743589743589743,
+      "missed_departure_rate_std": 0.0,
+      "eval_grid_violation_rate": 0.0,
+      "eval_grid_violation_rate_std": 0.0,
+      "eval_peak_kw": 70.20950317382812,
+      "eval_peak_kw_std": 0.0,
+      "eval_cost": 3728.8115234375,
+      "eval_cost_std": 0.0,
+      "final_train_reward": 655.9971478363283,
+      "final_train_reward_std": 2.9121641316496607
+    },
+    {
+      "cap_kw": 80.0,
+      "graph": "off",
+      "n_seeds": 2,
+      "missed_departure_rate": 0.9743589743589743,
+      "missed_departure_rate_std": 0.0,
+      "eval_grid_violation_rate": 0.0,
+      "eval_grid_violation_rate_std": 0.0,
+      "eval_peak_kw": 70.20950317382812,
+      "eval_peak_kw_std": 0.0,
+      "eval_cost": 3728.8115234375,
+      "eval_cost_std": 0.0,
+      "final_train_reward": 656.1245081575389,
+      "final_train_reward_std": 3.002151196759826
+    },
+    {
+      "cap_kw": 30.0,
+      "graph": "on",
+      "n_seeds": 2,
+      "missed_departure_rate": 0.9743589743589743,
+      "missed_departure_rate_std": 0.0,
+      "eval_grid_violation_rate": 0.11083333333333334,
+      "eval_grid_violation_rate_std": 0.0,
+      "eval_peak_kw": 70.20950317382812,
+      "eval_peak_kw_std": 0.0,
+      "eval_cost": 3728.8115234375,
+      "eval_cost_std": 0.0,
+      "final_train_reward": 453.99241665804516,
+      "final_train_reward_std": 2.0348610478117735
+    },
+    {
+      "cap_kw": 30.0,
+      "graph": "off",
+      "n_seeds": 2,
+      "missed_departure_rate": 0.9743589743589743,
+      "missed_departure_rate_std": 0.0,
+      "eval_grid_violation_rate": 0.11083333333333334,
+      "eval_grid_violation_rate_std": 0.0,
+      "eval_peak_kw": 70.20950317382812,
+      "eval_peak_kw_std": 0.0,
+      "eval_cost": 3728.8115234375,
+      "eval_cost_std": 0.0,
+      "final_train_reward": 454.12367232184954,
+      "final_train_reward_std": 2.0901955210066774
+    }
+  ],
+  "runs": [
+    {
+      "cap_kw": 80.0,
+      "graph": "on",
+      "seed": 0,
+      "episodes": 8,
+      "steps": 1200,
+      "final_train_reward": 653.0849837046786,
+      "eval_grid_violation_rate": 0.0,
+      "eval_peak_kw": 70.20950317382812,
+      "eval_cost": 3728.8115234375,
+      "eval_electricity": 14460.3671875,
+      "train_curve": [
+        {
+          "episode": 1,
+          "reward": 650.0824118162077,
+          "grid_violation_rate": 0.0,
+          "seconds": 54.194549560546875
+        },
+        {
+          "episode": 2,
+          "reward": 644.9108637775316,
+          "grid_violation_rate": 0.0,
+          "seconds": 61.43172550201416
+        },
+        {
+          "episode": 3,
+          "reward": 643.5835114658204,
+          "grid_violation_rate": 0.0,
+          "seconds": 58.68297553062439
+        },
+        {
+          "episode": 4,
+          "reward": 653.4977411876143,
+          "grid_violation_rate": 0.0,
+          "seconds": 63.852572202682495
+        },
+        {
+          "episode": 5,
+          "reward": 649.90444037159,
+          "grid_violation_rate": 0.0,
+          "seconds": 70.48787879943848
+        },
+        {
+          "episode": 6,
+          "reward": 648.295476431299,
+          "grid_violation_rate": 0.0,
+          "seconds": 58.09897708892822
+        },
+        {
+          "episode": 7,
+          "reward": 651.5893185557431,
+          "grid_violation_rate": 0.0,
+          "seconds": 56.71003770828247
+        },
+        {
+          "episode": 8,
+          "reward": 653.0849837046786,
+          "grid_violation_rate": 0.0,
+          "seconds": 51.29353427886963
+        }
+      ],
+      "departures": 234,
+      "missed_departures": 228,
+      "missed_departure_rate": 0.9743589743589743
+    },
+    {
+      "cap_kw": 80.0,
+      "graph": "on",
+      "seed": 1,
+      "episodes": 8,
+      "steps": 1200,
+      "final_train_reward": 658.9093119679779,
+      "eval_grid_violation_rate": 0.0,
+      "eval_peak_kw": 70.20950317382812,
+      "eval_cost": 3728.8115234375,
+      "eval_electricity": 14460.3671875,
+      "train_curve": [
+        {
+          "episode": 1,
+          "reward": 647.7119310678949,
+          "grid_violation_rate": 0.0,
+          "seconds": 51.58661890029907
+        },
+        {
+          "episode": 2,
+          "reward": 638.155413065042,
+          "grid_violation_rate": 0.0,
+          "seconds": 52.57704424858093
+        },
+        {
+          "episode": 3,
+          "reward": 651.7347912169228,
+          "grid_violation_rate": 0.0,
+          "seconds": 52.087982177734375
+        },
+        {
+          "episode": 4,
+          "reward": 652.5220560418134,
+          "grid_violation_rate": 0.0,
+          "seconds": 51.084760665893555
+        },
+        {
+          "episode": 5,
+          "reward": 649.0652372489719,
+          "grid_violation_rate": 0.0,
+          "seconds": 67.04120945930481
+        },
+        {
+          "episode": 6,
+          "reward": 651.4377979998578,
+          "grid_violation_rate": 0.0,
+          "seconds": 59.29733610153198
+        },
+        {
+          "episode": 7,
+          "reward": 648.4226054802955,
+          "grid_violation_rate": 0.0,
+          "seconds": 54.705650091171265
+        },
+        {
+          "episode": 8,
+          "reward": 658.9093119679779,
+          "grid_violation_rate": 0.0,
+          "seconds": 56.25524592399597
+        }
+      ],
+      "departures": 234,
+      "missed_departures": 228,
+      "missed_departure_rate": 0.9743589743589743
+    },
+    {
+      "cap_kw": 80.0,
+      "graph": "off",
+      "seed": 0,
+      "episodes": 8,
+      "steps": 1200,
+      "final_train_reward": 653.1223569607791,
+      "eval_grid_violation_rate": 0.0,
+      "eval_peak_kw": 70.20950317382812,
+      "eval_cost": 3728.8115234375,
+      "eval_electricity": 14460.3671875,
+      "train_curve": [
+        {
+          "episode": 1,
+          "reward": 649.7621455723274,
+          "grid_violation_rate": 0.0,
+          "seconds": 57.912999391555786
+        },
+        {
+          "episode": 2,
+          "reward": 644.8431873052435,
+          "grid_violation_rate": 0.0,
+          "seconds": 57.98596668243408
+        },
+        {
+          "episode": 3,
+          "reward": 643.5314995370687,
+          "grid_violation_rate": 0.0,
+          "seconds": 56.7807674407959
+        },
+        {
+          "episode": 4,
+          "reward": 653.4526313534906,
+          "grid_violation_rate": 0.0,
+          "seconds": 53.55285143852234
+        },
+        {
+          "episode": 5,
+          "reward": 649.84571620168,
+          "grid_violation_rate": 0.0,
+          "seconds": 54.073309898376465
+        },
+        {
+          "episode": 6,
+          "reward": 648.3080885801356,
+          "grid_violation_rate": 0.0,
+          "seconds": 58.42906951904297
+        },
+        {
+          "episode": 7,
+          "reward": 651.5782254079994,
+          "grid_violation_rate": 0.0,
+          "seconds": 58.15185046195984
+        },
+        {
+          "episode": 8,
+          "reward": 653.1223569607791,
+          "grid_violation_rate": 0.0,
+          "seconds": 55.44716215133667
+        }
+      ],
+      "departures": 234,
+      "missed_departures": 228,
+      "missed_departure_rate": 0.9743589743589743
+    },
+    {
+      "cap_kw": 80.0,
+      "graph": "off",
+      "seed": 1,
+      "episodes": 8,
+      "steps": 1200,
+      "final_train_reward": 659.1266593542988,
+      "eval_grid_violation_rate": 0.0,
+      "eval_peak_kw": 70.20950317382812,
+      "eval_cost": 3728.8115234375,
+      "eval_electricity": 14460.3671875,
+      "train_curve": [
+        {
+          "episode": 1,
+          "reward": 646.5365735151082,
+          "grid_violation_rate": 0.0,
+          "seconds": 53.838505029678345
+        },
+        {
+          "episode": 2,
+          "reward": 638.1161495064412,
+          "grid_violation_rate": 0.0,
+          "seconds": 53.9913067817688
+        },
+        {
+          "episode": 3,
+          "reward": 651.7809926831725,
+          "grid_violation_rate": 0.0,
+          "seconds": 53.38475203514099
+        },
+        {
+          "episode": 4,
+          "reward": 652.4564719113921,
+          "grid_violation_rate": 0.0,
+          "seconds": 54.9419047832489
+        },
+        {
+          "episode": 5,
+          "reward": 649.0951093084484,
+          "grid_violation_rate": 0.0,
+          "seconds": 53.62633919715881
+        },
+        {
+          "episode": 6,
+          "reward": 651.5333973095871,
+          "grid_violation_rate": 0.0,
+          "seconds": 63.2188138961792
+        },
+        {
+          "episode": 7,
+          "reward": 648.5480753890928,
+          "grid_violation_rate": 0.0,
+          "seconds": 60.97147727012634
+        },
+        {
+          "episode": 8,
+          "reward": 659.1266593542988,
+          "grid_violation_rate": 0.0,
+          "seconds": 57.639471769332886
+        }
+      ],
+      "departures": 234,
+      "missed_departures": 228,
+      "missed_departure_rate": 0.9743589743589743
+    },
+    {
+      "cap_kw": 30.0,
+      "graph": "on",
+      "seed": 0,
+      "episodes": 8,
+      "steps": 1200,
+      "final_train_reward": 451.9575556102334,
+      "eval_grid_violation_rate": 0.11083333333333334,
+      "eval_peak_kw": 70.20950317382812,
+      "eval_cost": 3728.8115234375,
+      "eval_electricity": 14460.3671875,
+      "train_curve": [
+        {
+          "episode": 1,
+          "reward": 447.00728158640413,
+          "grid_violation_rate": 0.07916666666666666,
+          "seconds": 67.90204381942749
+        },
+        {
+          "episode": 2,
+          "reward": 441.0280986951749,
+          "grid_violation_rate": 0.07916666666666666,
+          "seconds": 67.07644891738892
+        },
+        {
+          "episode": 3,
+          "reward": 441.09863693514876,
+          "grid_violation_rate": 0.085,
+          "seconds": 89.9448561668396
+        },
+        {
+          "episode": 4,
+          "reward": 451.91961081727413,
+          "grid_violation_rate": 0.07333333333333333,
+          "seconds": 105.59095335006714
+        },
+        {
+          "episode": 5,
+          "reward": 449.73268315301056,
+          "grid_violation_rate": 0.06916666666666667,
+          "seconds": 105.75473976135254
+        },
+        {
+          "episode": 6,
+          "reward": 444.68539144544593,
+          "grid_violation_rate": 0.07916666666666666,
+          "seconds": 104.33168482780457
+        },
+        {
+          "episode": 7,
+          "reward": 448.5851830027861,
+          "grid_violation_rate": 0.0725,
+          "seconds": 104.48859024047852
+        },
+        {
+          "episode": 8,
+          "reward": 451.9575556102334,
+          "grid_violation_rate": 0.0725,
+          "seconds": 106.42551946640015
+        }
+      ],
+      "departures": 234,
+      "missed_departures": 228,
+      "missed_departure_rate": 0.9743589743589743
+    },
+    {
+      "cap_kw": 30.0,
+      "graph": "on",
+      "seed": 1,
+      "episodes": 8,
+      "steps": 1200,
+      "final_train_reward": 456.02727770585693,
+      "eval_grid_violation_rate": 0.11083333333333334,
+      "eval_peak_kw": 70.20950317382812,
+      "eval_cost": 3728.8115234375,
+      "eval_electricity": 14460.3671875,
+      "train_curve": [
+        {
+          "episode": 1,
+          "reward": 446.489174675292,
+          "grid_violation_rate": 0.0825,
+          "seconds": 104.89214491844177
+        },
+        {
+          "episode": 2,
+          "reward": 437.24096137613344,
+          "grid_violation_rate": 0.0825,
+          "seconds": 102.90293502807617
+        },
+        {
+          "episode": 3,
+          "reward": 449.0670384645982,
+          "grid_violation_rate": 0.0675,
+          "seconds": 105.66853666305542
+        },
+        {
+          "episode": 4,
+          "reward": 450.8998307351661,
+          "grid_violation_rate": 0.07666666666666666,
+          "seconds": 70.83579802513123
+        },
+        {
+          "episode": 5,
+          "reward": 446.6504682878401,
+          "grid_violation_rate": 0.07416666666666667,
+          "seconds": 64.75504183769226
+        },
+        {
+          "episode": 6,
+          "reward": 447.42232175026703,
+          "grid_violation_rate": 0.07,
+          "seconds": 65.44122791290283
+        },
+        {
+          "episode": 7,
+          "reward": 444.6709131054148,
+          "grid_violation_rate": 0.075,
+          "seconds": 101.77593874931335
+        },
+        {
+          "episode": 8,
+          "reward": 456.02727770585693,
+          "grid_violation_rate": 0.06666666666666667,
+          "seconds": 105.04397082328796
+        }
+      ],
+      "departures": 234,
+      "missed_departures": 228,
+      "missed_departure_rate": 0.9743589743589743
+    },
+    {
+      "cap_kw": 30.0,
+      "graph": "off",
+      "seed": 0,
+      "episodes": 8,
+      "steps": 1200,
+      "final_train_reward": 452.03347680084283,
+      "eval_grid_violation_rate": 0.11083333333333334,
+      "eval_peak_kw": 70.20950317382812,
+      "eval_cost": 3728.8115234375,
+      "eval_electricity": 14460.3671875,
+      "train_curve": [
+        {
+          "episode": 1,
+          "reward": 446.61035934796405,
+          "grid_violation_rate": 0.07583333333333334,
+          "seconds": 105.18162894248962
+        },
+        {
+          "episode": 2,
+          "reward": 440.95723374417184,
+          "grid_violation_rate": 0.07916666666666666,
+          "seconds": 87.79936146736145
+        },
+        {
+          "episode": 3,
+          "reward": 441.0632103402621,
+          "grid_violation_rate": 0.085,
+          "seconds": 58.21053194999695
+        },
+        {
+          "episode": 4,
+          "reward": 451.88635638896704,
+          "grid_violation_rate": 0.07333333333333333,
+          "seconds": 53.10721278190613
+        },
+        {
+          "episode": 5,
+          "reward": 449.70196059749605,
+          "grid_violation_rate": 0.06916666666666667,
+          "seconds": 59.74766397476196
+        },
+        {
+          "episode": 6,
+          "reward": 444.7169582532415,
+          "grid_violation_rate": 0.07916666666666666,
+          "seconds": 48.37075328826904
+        },
+        {
+          "episode": 7,
+          "reward": 448.57965991837625,
+          "grid_violation_rate": 0.0725,
+          "seconds": 47.836745262145996
+        },
+        {
+          "episode": 8,
+          "reward": 452.03347680084283,
+          "grid_violation_rate": 0.0725,
+          "seconds": 50.955451011657715
+        }
+      ],
+      "departures": 234,
+      "missed_departures": 228,
+      "missed_departure_rate": 0.9743589743589743
+    },
+    {
+      "cap_kw": 30.0,
+      "graph": "off",
+      "seed": 1,
+      "episodes": 8,
+      "steps": 1200,
+      "final_train_reward": 456.2138678428562,
+      "eval_grid_violation_rate": 0.11083333333333334,
+      "eval_peak_kw": 70.20950317382812,
+      "eval_cost": 3728.8115234375,
+      "eval_electricity": 14460.3671875,
+      "train_curve": [
+        {
+          "episode": 1,
+          "reward": 445.33152728174736,
+          "grid_violation_rate": 0.085,
+          "seconds": 49.807368516922
+        },
+        {
+          "episode": 2,
+          "reward": 437.21333993267996,
+          "grid_violation_rate": 0.08333333333333333,
+          "seconds": 49.69625973701477
+        },
+        {
+          "episode": 3,
+          "reward": 449.10928569520706,
+          "grid_violation_rate": 0.06833333333333333,
+          "seconds": 49.60022854804993
+        },
+        {
+          "episode": 4,
+          "reward": 450.8069570620535,
+          "grid_violation_rate": 0.07833333333333334,
+          "seconds": 49.36602210998535
+        },
+        {
+          "episode": 5,
+          "reward": 446.6889799723931,
+          "grid_violation_rate": 0.07416666666666667,
+          "seconds": 54.41963076591492
+        },
+        {
+          "episode": 6,
+          "reward": 447.52246166442256,
+          "grid_violation_rate": 0.07083333333333333,
+          "seconds": 60.17048740386963
+        },
+        {
+          "episode": 7,
+          "reward": 444.8193054756386,
+          "grid_violation_rate": 0.07583333333333334,
+          "seconds": 57.038782358169556
+        },
+        {
+          "episode": 8,
+          "reward": 456.2138678428562,
+          "grid_violation_rate": 0.06666666666666667,
+          "seconds": 60.917805194854736
+        }
+      ],
+      "departures": 234,
+      "missed_departures": 228,
+      "missed_departure_rate": 0.9743589743589743
+    }
+  ]
+}

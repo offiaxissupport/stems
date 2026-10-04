@@ -1,0 +1,129 @@
+{
+  "meta": {
+    "scenario": {
+      "schema": "citylearn_schemas/tx_travis_8b/schema.json",
+      "season": "winter",
+      "subset_seed": null,
+      "n_buildings": 8,
+      "days": 28,
+      "grid_cap_kw": 300.0,
+      "building_cap_kw": 80.0,
+      "hvac_control": "setpoint",
+      "key": "tx_travis_8b__winter28d__refn8__cap300-80",
+      "buildings": [
+        "resstock-amy2018-2021-release-1-134795",
+        "resstock-amy2018-2021-release-1-15942",
+        "resstock-amy2018-2021-release-1-344233",
+        "resstock-amy2018-2021-release-1-400973",
+        "resstock-amy2018-2021-release-1-412815",
+        "resstock-amy2018-2021-release-1-427553",
+        "resstock-amy2018-2021-release-1-494842",
+        "resstock-amy2018-2021-release-1-519975"
+      ],
+      "train_window": [
+        0,
+        671
+      ],
+      "eval_window": [
+        672,
+        1343
+      ]
+    },
+    "arm": "rl+calibrated",
+    "seed": 0,
+    "share_parameters": true,
+    "lr": 0.001,
+    "code": {
+      "git": "5378df8-dirty",
+      "fingerprint": "72409e442cd82d39",
+      "files": 22,
+      "citylearn": "2.6.0b1"
+    }
+  },
+  "references": {
+    "idle+calibrated": {
+      "cost": 2137.68212890625,
+      "safety_violation_rate": 0.0,
+      "discomfort_rate": 0.014640097600650671,
+      "peak_import_kw": 39.14610290527344,
+      "battery_equivalent_full_cycles": 0.050503287464380264,
+      "electricity_consumption": 7353.0322265625
+    },
+    "rbc+calibrated": {
+      "cost": 1794.18212890625,
+      "safety_violation_rate": 0.0,
+      "discomfort_rate": 0.014640097600650671,
+      "peak_import_kw": 64.0755615234375,
+      "battery_equivalent_full_cycles": 13.47100830078125,
+      "electricity_consumption": 7427.37744140625
+    }
+  },
+  "curve": [
+    {
+      "episodes": 10,
+      "train_reward": -676.1600079022389,
+      "entropy": 4.178537004134235,
+      "cost": 2190.72314453125,
+      "safety_violation_rate": 0.0,
+      "discomfort_rate": 0.009760065067100447,
+      "peak_import_kw": 40.73035430908203,
+      "battery_equivalent_full_cycles": 3.2195653915405273,
+      "electricity_consumption": 7572.708984375
+    },
+    {
+      "episodes": 20,
+      "train_reward": -570.0545209102751,
+      "entropy": 3.814619322617849,
+      "cost": 2100.32763671875,
+      "safety_violation_rate": 0.0,
+      "discomfort_rate": 0.011590077267181781,
+      "peak_import_kw": 42.35572814941406,
+      "battery_equivalent_full_cycles": 5.655135154724121,
+      "electricity_consumption": 7384.373046875
+    },
+    {
+      "episodes": 30,
+      "train_reward": -491.7212904268812,
+      "entropy": 3.6279124915599823,
+      "cost": 2116.796875,
+      "safety_violation_rate": 0.0,
+      "discomfort_rate": 0.011793411956079707,
+      "peak_import_kw": 40.217872619628906,
+      "battery_equivalent_full_cycles": 5.926095008850098,
+      "electricity_consumption": 7462.92529296875
+    },
+    {
+      "episodes": 40,
+      "train_reward": -448.3050050130582,
+      "entropy": 3.7065905332565308,
+      "cost": 2061.712890625,
+      "safety_violation_rate": 0.0,
+      "discomfort_rate": 0.012200081333875559,
+      "peak_import_kw": 39.64097595214844,
+      "battery_equivalent_full_cycles": 7.575013160705566,
+      "electricity_consumption": 7397.24658203125
+    },
+    {
+      "episodes": 50,
+      "train_reward": -443.6438686665015,
+      "entropy": 3.434064567089081,
+      "cost": 2088.002197265625,
+      "safety_violation_rate": 0.0,
+      "discomfort_rate": 0.00955673037820252,
+      "peak_import_kw": 40.433624267578125,
+      "battery_equivalent_full_cycles": 6.431759357452393,
+      "electricity_consumption": 7418.9443359375
+    },
+    {
+      "episodes": 60,
+      "train_reward": -413.70914851732323,
+      "entropy": 3.271024465560913,
+      "cost": 2071.1953125,
+      "safety_violation_rate": 0.0,
+      "discomfort_rate": 0.010166734444896299,
+      "peak_import_kw": 40.50578308105469,
+      "battery_equivalent_full_cycles": 6.441176414489746,
+      "electricity_consumption": 7373.8154296875
+    }
+  ]
+}

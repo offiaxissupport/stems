@@ -1,0 +1,72 @@
+[ctde] schema=citylearn_schemas/tx_travis_8b_ev/schema.json
+[ctde] episodes=20 steps=1200 seeds=[0] caps=[30.0]
+[ctde] one knob: graph adjacency on (CTDE-like) vs zeroed (DTDE).
+[ctde] shield coordination=independent, so coordination must be learned.
+[ctde] NOTE: vehicle schedules are synthetic; buildings are real.
+
+[ctde] cap=30kW graph=on  seed=0
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+      ep  1/20  reward=    441.8  viol=0.081  |a|=0.569  above_deadband=0.423  (44s)
+      ep  2/20  reward=    436.9  viol=0.079  |a|=0.549  above_deadband=0.446  (54s)
+      ep  3/20  reward=    436.3  viol=0.087  |a|=0.550  above_deadband=0.442  (69s)
+      ep  4/20  reward=    447.3  viol=0.077  |a|=0.547  above_deadband=0.443  (67s)
+      ep  5/20  reward=    445.6  viol=0.070  |a|=0.544  above_deadband=0.439  (74s)
+      ep  6/20  reward=    439.7  viol=0.077  |a|=0.548  above_deadband=0.443  (91s)
+      ep  7/20  reward=    444.2  viol=0.073  |a|=0.547  above_deadband=0.439  (83s)
+      ep  8/20  reward=    448.4  viol=0.071  |a|=0.542  above_deadband=0.443  (76s)
+      ep  9/20  reward=    446.9  viol=0.068  |a|=0.548  above_deadband=0.440  (78s)
+      ep 10/20  reward=    446.2  viol=0.070  |a|=0.546  above_deadband=0.443  (75s)
+      ep 11/20  reward=    443.4  viol=0.063  |a|=0.545  above_deadband=0.439  (72s)
+      ep 12/20  reward=    443.9  viol=0.068  |a|=0.545  above_deadband=0.435  (72s)
+      ep 13/20  reward=    443.5  viol=0.067  |a|=0.544  above_deadband=0.432  (70s)
+      ep 14/20  reward=    448.6  viol=0.070  |a|=0.541  above_deadband=0.427  (71s)
+      ep 15/20  reward=    446.2  viol=0.065  |a|=0.536  above_deadband=0.418  (61s)
+      ep 16/20  reward=    449.5  viol=0.058  |a|=0.539  above_deadband=0.421  (62s)
+      ep 17/20  reward=    454.4  viol=0.078  |a|=0.542  above_deadband=0.421  (61s)
+      ep 18/20  reward=    448.9  viol=0.068  |a|=0.547  above_deadband=0.421  (61s)
+      ep 19/20  reward=    452.5  viol=0.067  |a|=0.539  above_deadband=0.413  (60s)
+      ep 20/20  reward=    454.4  viol=0.068  |a|=0.539  above_deadband=0.411  (68s)
+      -> missed 6/234 (0.026)  viol=0.116  peak=68.6  cost=3731
+
+[ctde] cap=30kW graph=off seed=0
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+      ep  1/20  reward=    441.3  viol=0.076  |a|=0.569  above_deadband=0.423  (64s)
+      ep  2/20  reward=    436.9  viol=0.080  |a|=0.550  above_deadband=0.447  (67s)
+      ep  3/20  reward=    436.2  viol=0.087  |a|=0.551  above_deadband=0.442  (65s)
+      ep  4/20  reward=    447.3  viol=0.077  |a|=0.548  above_deadband=0.443  (61s)
+      ep  5/20  reward=    445.6  viol=0.070  |a|=0.544  above_deadband=0.439  (54s)
+      ep  6/20  reward=    439.7  viol=0.076  |a|=0.549  above_deadband=0.443  (49s)
+      ep  7/20  reward=    444.1  viol=0.073  |a|=0.548  above_deadband=0.439  (49s)
+      ep  8/20  reward=    448.3  viol=0.071  |a|=0.542  above_deadband=0.443  (53s)
+      ep  9/20  reward=    447.1  viol=0.069  |a|=0.548  above_deadband=0.440  (54s)
+      ep 10/20  reward=    446.1  viol=0.071  |a|=0.546  above_deadband=0.443  (53s)
+      ep 11/20  reward=    443.5  viol=0.063  |a|=0.545  above_deadband=0.438  (58s)
+      ep 12/20  reward=    444.1  viol=0.067  |a|=0.546  above_deadband=0.435  (52s)
+      ep 13/20  reward=    443.5  viol=0.068  |a|=0.545  above_deadband=0.431  (52s)
+      ep 14/20  reward=    448.6  viol=0.071  |a|=0.542  above_deadband=0.427  (57s)
+      ep 15/20  reward=    446.2  viol=0.065  |a|=0.537  above_deadband=0.418  (62s)
+      ep 16/20  reward=    449.5  viol=0.058  |a|=0.540  above_deadband=0.421  (59s)
+      ep 17/20  reward=    454.5  viol=0.078  |a|=0.543  above_deadband=0.421  (57s)
+      ep 18/20  reward=    449.2  viol=0.070  |a|=0.547  above_deadband=0.421  (65s)
+      ep 19/20  reward=    452.8  viol=0.066  |a|=0.540  above_deadband=0.411  (76s)
+      ep 20/20  reward=    454.6  viol=0.066  |a|=0.540  above_deadband=0.411  (59s)
+      -> missed 6/234 (0.026)  viol=0.116  peak=68.6  cost=3731
+
+
+==============================================================================
+   cap  graph   missed rate     viol     peak       cost
+------------------------------------------------------------------------------
+    30     on 0.026+/-0.000    0.116     68.6       3731
+    30    off 0.026+/-0.000    0.116     68.6       3731
+==============================================================================
+[ctde] wrote C:/Users/medya/AppData/Local/Temp/ctde_probe.json

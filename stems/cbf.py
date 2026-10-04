@@ -1,34 +1,29 @@
-"""
-CBF Safety Shield (Eq 16-20, Algorithm 1) and Neural Safety Filter.
+"""Control Barrier Function safety shield (Eq. 16-20, Algorithm 1).
 
-Two complementary safety mechanisms:
+The shield projects each building's nominal action onto the safe set defined by
+three barriers: battery SOC bounds (h1, Eq. 16), per-building net power (h2,
+Eq. 17) and total grid import (h3, Eq. 18).
 
-CBFShield (original STEMS)
---------------------------
-Solves a QP to find the minimal action correction satisfying hard constraints.
-Used as a verified fallback and for offline data collection.
+Calibration (the central correctness fix). The battery SOC change per unit
+action is **per building** and read from the real CityLearn battery model
+(``soc_rate = nominal_power / capacity``, ~0.18-0.53 here), not a single
+hard-coded constant. The previous code used 0.1 for every building, under-
+estimating the true delta 2-5x, which let "safe" actions blow through the SOC
+bounds -- the main source of the ~70% violation rate on real data.
 
-NeuralSafetyFilter (novel contribution)
-----------------------------------------
-A learned, differentiable safety correction network trained on (state, action)
-pairs collected from the CBF QP oracle.  It maps unsafe nominal actions to safe
-ones end-to-end, so safety gradients flow directly into policy learning.
+The SOC barrier is decoupled per building, so the projection is solved
+analytically (vectorised, no QP), which is both exact and fast enough for the
+8760 x 8 step budget. The coupled power/grid barriers are handled by an analytic
+guard that scales down import-increasing actions; on the Travis dataset they
+essentially never bind (loads ~10-40 kW vs 80/300 kW caps).
 
-Architecture:
-    Input : [obs_i (D), a_nom_i (A)]  ← per-building concatenation
-    Trunk : 3 × Linear-LayerNorm-ReLU (hidden_dim=128)
-    Head  : Linear → Tanh → safe_action (A)  ← same range as actor
-
-Uncertainty estimation:
-    MC-Dropout ensemble of E=5 forward passes during inference.
-    If ensemble std exceeds `uncertainty_threshold`, fall back to CBFShield QP.
-
-Training:
-    Offline, on a dataset of (obs, a_nom, a_safe) tuples where a_safe comes
-    from the CBF QP oracle.  Loss = MSE(predicted_safe, a_safe_qp) +
-    α · constraint_penalty(predicted_safe, obs).
-    The constraint penalty is the sum of ReLU(−h_k) over all violated CBF
-    constraints, making the loss differentiable w.r.t. the network weights.
+Constraint-violation tricks implemented here (ablated via ``SafetyConfig``):
+  * feasibility_qp  -- always returns the least-violating feasible action and a
+                       recovery action when the state is already out of bounds;
+                       never the old "emergency zeros".
+  * robust_margins  -- enforce a band strictly inside the reported limits.
+  * anticipatory    -- a per-building control-invariance buffer (scaled by the
+                       battery's max one-step move) keeping the state recoverable.
 """
 
 from __future__ import annotations
@@ -39,496 +34,434 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from stems.config import CBFConfig
+from stems.battery import BatteryModel
+from stems.config import CBFConfig, SafetyConfig
+from stems.deadline import (DeadlineStorageBarrier, coupled_feasibility,
+                            prioritise)
+from stems.thermal import CoPModel, DHWReadinessBarrier
 
-# --------------------------------------------------------------------------
-# Optional cvxpy import
-# --------------------------------------------------------------------------
-_CVXPY_AVAILABLE = False
-try:
-    import cvxpy as cp  # type: ignore
-    _CVXPY_AVAILABLE = True
-except ImportError:
-    pass
-
-# Observation indices (matching OBS_NAMES in environment.py)
+# STEMS observation indices (see OBS_NAMES in environment.py)
+_IDX_T_OUT = 2        # outdoor_dry_bulb_temperature
 _IDX_SOC_ELEC = 19    # electrical_storage_soc
 _IDX_NET = 20         # net_electricity_consumption
 
 
-# --------------------------------------------------------------------------
-# CBFShield
-# --------------------------------------------------------------------------
-
 class CBFShield:
-    """Control Barrier Function safety shield.
+    """Feasibility-guaranteed CBF safety shield.
 
     Parameters
     ----------
     config : CBFConfig
-        CBF hyper-parameters.
+        Reported safety bounds (SOC band, power caps).
     num_buildings : int
         Number of buildings B.
+    soc_rate : array-like, shape (B,)
+        Per-building SOC change per unit battery action (from env.battery_info).
+    nominal_power : array-like, shape (B,) | None
+        Per-building battery rated power (kW), for the power barrier.
+    action_scale : float
+        Action magnitude bound (paper: 1.0).
+    elec_idx : int
+        Index of the battery action within the action vector.
+    safety_cfg : SafetyConfig | None
+        Trick switches (robust margins, anticipatory buffer).
     """
-
-    # SOC change per unit action per timestep.
-    # Must match the mock environment's dynamics: _MockBuilding.step() applies
-    # soc_elec += elec_action * 0.1, so the CBF must use the same coefficient.
-    # A mismatch (e.g. 0.8 vs 0.1) makes the QP over-conservative by 8× and
-    # causes check_violations to disagree with what the environment actually does.
-    SOC_DELTA_RATE: float = 0.1
 
     def __init__(
         self,
         config: Optional[CBFConfig] = None,
-        num_buildings: int = 3,
+        num_buildings: int = 8,
+        soc_rate: Optional[np.ndarray] = None,
+        nominal_power: Optional[np.ndarray] = None,
         action_scale: float = 1.0,
-        electrical_storage_action_index: Optional[int] = None,
+        elec_idx: int = 1,
+        safety_cfg: Optional[SafetyConfig] = None,
+        enforce_soc: bool = True,
+        dhw_barrier: Optional[DHWReadinessBarrier] = None,
+        cop_model: Optional[CoPModel] = None,
+        hvac_idx: int = -1,
+        deadline_barriers: Optional[List[DeadlineStorageBarrier]] = None,
+        coordination: str = "independent",
+        battery_model: Optional[BatteryModel] = None,
     ) -> None:
         self.cfg = config or CBFConfig()
+        self.safety = safety_cfg or SafetyConfig()
         self.B = num_buildings
-        self.action_scale = action_scale
-        self.electrical_storage_action_index = electrical_storage_action_index
-
-    def _elec_idx(self, action_dim: int) -> int:
-        if self.electrical_storage_action_index is None:
-            return 1 if action_dim > 2 else 0
-        return max(0, min(int(self.electrical_storage_action_index), action_dim - 1))
-
-    def _power_factors(self, action_dim: int) -> np.ndarray:
-        factors = np.zeros(action_dim, dtype=np.float32)
-        base = np.asarray(self.POWER_FACTORS[:action_dim], dtype=np.float32)
-        factors[: len(base)] = base
-        elec_idx = self._elec_idx(action_dim)
-        factors[elec_idx] = 0.1
-        if action_dim == 2 and elec_idx == 0:
-            factors[1] = 0.5
-        return factors
+        self.action_scale = float(action_scale)
+        self.elec_idx = int(elec_idx)
+        # When the battery is not an agent-controlled actuator (e.g. heat-pump-only
+        # studies) the SOC barrier is meaningless and is skipped.
+        self.enforce_soc = bool(enforce_soc)
+        # The battery model the SOC barrier inverts. ``battery_model`` is the
+        # simulator's own dynamics (STEMSEnvironment.battery_model()); a bare
+        # ``soc_rate`` gives the linear model soc + a * rate. There is no default:
+        # an assumed rate is the mis-calibration this project set out to remove.
+        if battery_model is None:
+            if soc_rate is None:
+                if self.enforce_soc:
+                    raise ValueError("CBFShield needs battery_model or soc_rate to enforce "
+                                     "the state-of-charge band")
+                soc_rate = np.zeros(num_buildings, dtype=np.float32)
+            battery_model = BatteryModel.linear(np.asarray(soc_rate, dtype=np.float64))
+        self.battery = battery_model
+        # Largest one-step move at nameplate power (used by the optional
+        # anticipatory buffer and reported as the barrier's calibration).
+        self.soc_rate = (battery_model.nominal_power * battery_model.dt
+                         / battery_model.capacity).astype(np.float32)
+        self.nominal_power = (np.asarray(nominal_power, dtype=np.float32).reshape(-1)
+                              if nominal_power is not None else None)
+        # Barrier h4 (anticipatory hot-water readiness) and the weather-dependent
+        # CoP model used by the power guard. Both optional; when absent the shield
+        # behaves exactly as before (battery-only).
+        self.dhw_barrier = dhw_barrier
+        self.cop_model = cop_model
+        self.hvac_idx = int(hvac_idx)
+        # Deadline-constrained stores (hot water, EV bays). ``dhw_barrier`` is
+        # kept as its own argument for the heat-pump-only studies, whose results
+        # are benchmarked elsewhere; it is simply the first entry of this list.
+        # How deadline barriers behave when their joint demand exceeds the grid
+        # cap:
+        #   "independent"  each projects on its own -- correct per device,
+        #                  collectively blind to the shared connection.
+        #   "proportional" the cap is enforced, every device scaled equally.
+        #   "edf"          the cap is enforced, allocated earliest-deadline-first.
+        # independent vs the others measures whether enforcing the shared cap
+        # matters; proportional vs edf isolates the value of the priority rule
+        # alone, holding the enforced total identical. All three coincide
+        # wherever the cap is slack, which is what makes a sweep the right
+        # instrument.
+        if coordination not in ("independent", "proportional", "edf"):
+            raise ValueError("coordination must be 'independent', 'proportional' "
+                             f"or 'edf', got {coordination!r}")
+        self.coordination = coordination
+        self.deadline_barriers: List[DeadlineStorageBarrier] = list(
+            deadline_barriers or [])
+        if dhw_barrier is not None and dhw_barrier not in self.deadline_barriers:
+            self.deadline_barriers.insert(0, dhw_barrier)
 
     # ------------------------------------------------------------------
-    # Constraint functions
+    # Enforced (robust + anticipatory) bounds
     # ------------------------------------------------------------------
 
-    def _h_soc(self, soc: float, delta_soc: float) -> Tuple[float, float]:
-        """Eq 16: Battery SOC safety margin.
+    def enforced_soc_bounds(self) -> Tuple[np.ndarray, np.ndarray]:
+        """Return per-building enforced (SOC_lo, SOC_hi) inside the reported band.
 
-        Returns (h_lower, h_upper) – both should be >= 0.
+        Combines the fixed robust margin (Trick 4) with the per-building
+        control-invariance buffer (Trick 2). The buffer is scaled by the
+        battery's largest one-step move so aggressive batteries keep more
+        headroom and remain recoverable.
         """
-        h_lower = soc + delta_soc - self.cfg.SOC_min
-        h_upper = self.cfg.SOC_max - (soc + delta_soc)
-        return h_lower, h_upper
+        margin = self.safety.soc_margin if self.safety.robust_margins else 0.0
+        margin += self.safety.soc_tolerance
+        lo = np.full(self.B, self.cfg.SOC_min + margin, dtype=np.float32)
+        hi = np.full(self.B, self.cfg.SOC_max - margin, dtype=np.float32)
+        if self.safety.anticipatory:
+            buf = 0.5 * self.soc_rate * float(self.safety.invariance_horizon)
+            lo = lo + buf
+            hi = hi - buf
+        # Guarantee a non-empty band even for very aggressive batteries.
+        mid = 0.5 * (self.cfg.SOC_min + self.cfg.SOC_max)
+        lo = np.minimum(lo, mid - 1e-3)
+        hi = np.maximum(hi, mid + 1e-3)
+        return lo, hi
 
-    def _h_build(self, net: float) -> float:
-        """Eq 17: Per-building power safety margin."""
-        return self.cfg.P_building_max - abs(net)
+    def power_cap(self) -> float:
+        derate = self.safety.power_derate if self.safety.robust_margins else 0.0
+        return float(self.cfg.P_building_max * (1.0 - derate))
 
-    def _h_grid(self, total_positive_net: float) -> float:
-        """Eq 18: Total grid power safety margin.
+    def grid_cap(self) -> float:
+        derate = self.safety.power_derate if self.safety.robust_margins else 0.0
+        return float(self.cfg.P_grid_max * (1.0 - derate))
 
-        Paper Eq 18: h_grid = P_grid_max - Σ_i max(0, e_i) ≥ 0
-        Only grid *imports* (positive net) count against the grid limit.
+    # ------------------------------------------------------------------
+    # Projection (Algorithm 1) -- analytic, feasibility-guaranteed
+    # ------------------------------------------------------------------
+
+    def project(self, actions: np.ndarray, states: List[np.ndarray]) -> np.ndarray:
+        """Project nominal actions onto the safe set.
+
+        Returns the minimally-modified safe action where one exists, and the
+        recovery action (drive SOC back toward the band) where the state is
+        already outside it. Never returns an all-zero "emergency" action.
         """
-        return self.cfg.P_grid_max - total_positive_net
+        actions = np.asarray(actions, dtype=np.float32)
+        B, action_dim = actions.shape
+        safe = actions.copy()
+        if not self.enforce_soc:
+            # No battery control -> no SOC projection, but the thermal barriers
+            # (hot-water readiness, CoP-aware power) still apply.
+            safe = self._apply_deadline_barriers(safe, states)
+            return self._apply_hvac_power_guard(safe, states)
+        soc = np.array([float(s[_IDX_SOC_ELEC]) for s in states], dtype=np.float32)
+        lo, hi = self.enforced_soc_bounds()
+        # The actions that keep the next state of charge in [lo, hi] under the
+        # battery model; where the band is out of reach the interval collapses
+        # onto the recovery action (full charge below it, full discharge above).
+        a_lo, a_hi = self.battery.safe_interval(soc, lo, hi, a_max=self.action_scale)
+        # Minimal correction: the nearest point of that interval.
+        safe[:, self.elec_idx] = np.clip(actions[:, self.elec_idx], a_lo, a_hi)
+
+        # Coupled power / grid guard (rarely binds on this dataset). Charging
+        # increases import; reduce the battery action if a building or the grid
+        # would exceed its enforced cap.
+        if self.nominal_power is not None:
+            safe = self._apply_power_guard(safe, states, a_lo)
+        safe = self._apply_deadline_barriers(safe, states)
+        return self._apply_hvac_power_guard(safe, states)
+
+    def _apply_power_guard(self, safe: np.ndarray, states: List[np.ndarray],
+                           a_lo: np.ndarray) -> np.ndarray:
+        net = np.array([float(s[_IDX_NET]) for s in states], dtype=np.float32)
+        nom = self.nominal_power
+        pred_import = net + np.maximum(safe[:, self.elec_idx], 0.0) * nom  # charging adds draw
+        p_cap = self.power_cap()
+        over = pred_import > p_cap
+        for i in np.where(over)[0]:
+            # Reduce charge so building import <= cap, but never below what the
+            # state-of-charge band requires (charging when below it).
+            allowed = max(0.0, (p_cap - net[i]) / max(nom[i], 1e-6))
+            safe[i, self.elec_idx] = float(np.clip(allowed, min(a_lo[i], safe[i, self.elec_idx]),
+                                                   safe[i, self.elec_idx]))
+        # Grid total import guard: if the sum of positive imports exceeds the
+        # grid cap, scale down all charging proportionally.
+        pred_import = net + np.maximum(safe[:, self.elec_idx], 0.0) * nom
+        total = float(np.maximum(pred_import, 0.0).sum())
+        g_cap = self.grid_cap()
+        if total > g_cap and total > 1e-6:
+            scale = g_cap / total
+            charging = safe[:, self.elec_idx] > 0
+            safe[charging, self.elec_idx] *= scale
+        return safe
 
     # ------------------------------------------------------------------
-    # Constraint violation check
+    # Deadline-constrained stores (hot water, EV bays)
     # ------------------------------------------------------------------
 
-    def check_violations(
-        self,
-        actions: np.ndarray,
-        states: List[np.ndarray],
-    ) -> np.ndarray:
-        """Return boolean mask (B,) – True where building i violates a constraint."""
+    def _apply_deadline_barriers(self, safe: np.ndarray,
+                                 states: List[np.ndarray]) -> np.ndarray:
+        """Apply every deadline barrier in turn.
+
+        Each projection is monotone and touches only its own action index, so
+        the order of application does not matter and no barrier can undo
+        another. What they *can* do jointly is exceed the power cap -- see
+        ``feasibility_report``, which is diagnostic rather than corrective
+        precisely because no per-device projection can repair a jointly
+        infeasible set.
+        """
+        for barrier in self.deadline_barriers:
+            safe = barrier.project(safe, states)
+        if self.coordination != "independent":
+            safe = self._apply_shared_power_allocation(safe, states)
+        return safe
+
+    def _apply_shared_power_allocation(self, safe: np.ndarray,
+                                       states: List[np.ndarray]) -> np.ndarray:
+        """Enforce the shared import cap across all deadline-constrained devices.
+
+        Independent projection is correct for each device in isolation but has no
+        view of the connection they share, so several stores can collectively
+        request more instantaneous power than the cap allows. Note that this is a
+        *different* condition from ``coupled_feasibility``: that one asks whether
+        enough energy can flow before the earliest deadline, which overnight is
+        usually true; this one asks whether the power requested *right now* fits,
+        which is what actually binds when a street charges at once.
+
+        Two allocation rules are supported. ``proportional`` scales every request
+        by the same factor. ``edf`` serves the earliest deadline first, so a
+        vehicle leaving in an hour is charged ahead of one leaving at dawn. Both
+        enforce the identical total, so any difference between them is
+        attributable to the priority rule and nothing else.
+
+        The allocation is an upper bound: a device asking for less than its share
+        keeps its own action.
+        """
+        cap = self.grid_cap()
+        net = np.array([float(s_[_IDX_NET]) for s_ in states], dtype=np.float32)
+        baseline = float(np.maximum(net, 0.0).sum())
+        headroom = max(cap - baseline, 0.0)
+
+        entries = []          # (deadline, barrier, building, requested kW)
+        requested_total = 0.0
+        for barrier in self.deadline_barriers:
+            power = getattr(barrier, "_p_charge", None)
+            if power is None:
+                continue      # device exposes no electrical rating; skip
+            u = barrier.urgency(states)
+            a = np.maximum(safe[:, barrier.action_index], 0.0)
+            kw = a * power
+            for i in range(len(kw)):
+                if kw[i] > 1e-9:
+                    entries.append((float(u["steps_to_deadline"][i]), barrier,
+                                    i, float(kw[i])))
+                    requested_total += float(kw[i])
+
+        if requested_total <= headroom + 1e-9 or requested_total <= 1e-9:
+            return safe       # the cap is slack: every rule agrees here
+
+        if self.coordination == "proportional":
+            scale = headroom / requested_total
+            for _, barrier, i, kw in entries:
+                idx = barrier.action_index
+                safe[i, idx] = safe[i, idx] * scale
+            return safe
+
+        # Earliest deadline first; a larger outstanding request breaks ties.
+        entries.sort(key=lambda e: (e[0], -e[3]))
+        budget = headroom
+        for _, barrier, i, kw in entries:
+            grant = min(kw, budget)
+            budget -= grant
+            idx = barrier.action_index
+            safe[i, idx] = safe[i, idx] * (grant / kw) if kw > 1e-9 else 0.0
+        return safe
+
+    def feasibility_report(self, states: List[np.ndarray]) -> Optional[dict]:
+        """Can every deadline still be met under the grid cap? (Eq. 3.)
+
+        Returns ``None`` when no deadline-constrained store is present. Otherwise
+        reports the energy owed, the energy available before the earliest
+        deadline, and -- when the safe set is empty -- an earliest-deadline-first
+        allocation naming which requirements are expected to slip.
+
+        This is the honest counterpart to the shield's per-device guarantee: the
+        SOC barrier is feasibility-guaranteed because it is decoupled, but a
+        fleet of deadline-constrained stores behind one cap is not, and a shield
+        that silently absorbed that would be claiming a guarantee it cannot keep.
+        """
+        if not self.deadline_barriers:
+            return None
+        report = coupled_feasibility(self.deadline_barriers, states,
+                                     power_cap_kw=self.grid_cap())
+        if not report["feasible"]:
+            report["priority"] = prioritise(self.deadline_barriers, states,
+                                            power_cap_kw=self.grid_cap())
+        return report
+
+    # ------------------------------------------------------------------
+    # Weather-aware (CoP) HVAC power guard
+    # ------------------------------------------------------------------
+
+    def _apply_hvac_power_guard(self, safe: np.ndarray,
+                                states: List[np.ndarray]) -> np.ndarray:
+        """Fold the HVAC electrical draw into the per-building/grid power barriers.
+
+        The battery-only guard ignored space conditioning entirely. Heat-pump
+        control makes that unsafe to assume: the HVAC action draws
+        ``|a| * P_nom`` electrical, and the *thermal service* that buys shrinks
+        with the CoP, so a cold hour needs a larger action for the same comfort.
+        The guard therefore (i) counts the HVAC draw in the predicted import and
+        (ii) reserves extra headroom proportional to the CoP shortfall relative
+        to the pump's rated-condition CoP, so the cap is approached more
+        cautiously exactly when conditioning is least efficient.
+        """
+        if self.cop_model is None or self.hvac_idx < 0:
+            return safe
+        net = np.array([float(s[_IDX_NET]) for s in states], dtype=np.float32)
+        t_out = np.array([float(s[_IDX_T_OUT]) for s in states], dtype=np.float32)
+        # CityLearn splits the one HVAC action by sign -- a_heat = max(a, 0),
+        # a_cool = |min(a, 0)| -- and hvac_mode is 3 (both allowed) at every hour
+        # of this data, so the mode is the action's own sign. Inferring it from
+        # the weather priced a cooling command on a cold day at the heating CoP.
+        heating = safe[:, self.hvac_idx] > 0.0
+
+        p_nom = np.where(heating, self.cop_model.p_h, self.cop_model.p_c)
+        cop_h = self.cop_model.cop(t_out, heating=True)
+        cop_c = self.cop_model.cop(t_out, heating=False)
+        cop = np.where(heating, cop_h, cop_c)
+        # Rated-condition reference CoP (mild weather): the shortfall below it is
+        # the fraction of extra headroom we hold back.
+        cop_ref = np.maximum(
+            np.where(heating,
+                     self.cop_model.cop(np.full_like(t_out, 10.0), heating=True),
+                     self.cop_model.cop(np.full_like(t_out, 30.0), heating=False)),
+            1e-3)
+        shortfall = np.clip(1.0 - cop / cop_ref, 0.0, 0.5)
+
+        a_hvac = safe[:, self.hvac_idx]
+        draw = np.abs(a_hvac) * p_nom
+        p_cap = self.power_cap() * (1.0 - shortfall)
+        pred = net + draw
+        over = pred > p_cap
+        for i in np.where(over)[0]:
+            allowed = max(0.0, (p_cap[i] - net[i]) / max(p_nom[i], 1e-6))
+            safe[i, self.hvac_idx] = float(np.sign(a_hvac[i]) *
+                                           min(abs(a_hvac[i]), allowed))
+        # Aggregate grid guard including HVAC draw.
+        total = float(np.maximum(net + np.abs(safe[:, self.hvac_idx]) * p_nom, 0.0).sum())
+        g_cap = self.grid_cap()
+        if total > g_cap and total > 1e-6:
+            safe[:, self.hvac_idx] *= g_cap / total
+        return safe
+
+    # ------------------------------------------------------------------
+    # Model-based violation predicate (for diagnostics / cost signals)
+    # ------------------------------------------------------------------
+
+    def predicted_constraint_costs(self, actions: np.ndarray,
+                                   states: List[np.ndarray]) -> np.ndarray:
+        """Return a (B, 3) binary cost: would each barrier be violated next step?
+
+        k=0 SOC, k=1 per-building power, k=2 total grid power. Uses the same
+        linear model as the projection (so it is consistent with what the shield
+        can actually enforce). These feed the Lagrangian cost critics.
+        """
+        actions = np.asarray(actions, dtype=np.float32)
         B = self.B
-        violations = np.zeros(B, dtype=bool)
+        soc = np.array([float(s[_IDX_SOC_ELEC]) for s in states], dtype=np.float32)
+        net = np.array([float(s[_IDX_NET]) for s in states], dtype=np.float32)
+        rate = np.maximum(self.soc_rate, 1e-6)
+        next_soc = soc + actions[:, self.elec_idx] * rate
 
-        # Eq 18: grid constraint uses Σ max(0, e_i) — only imports count
-        total_positive_net = sum(max(0.0, float(s[_IDX_NET])) for s in states)
-        grid_ok = self._h_grid(total_positive_net) >= 0.0
-
-        for i in range(B):
-            soc = float(states[i][_IDX_SOC_ELEC])
-            elec_idx = self._elec_idx(actions.shape[1])
-            delta_soc = float(actions[i, elec_idx]) * self.SOC_DELTA_RATE
-            net_i = float(states[i][_IDX_NET])
-
-            h_lo, h_hi = self._h_soc(soc, delta_soc)
-            soc_ok = (h_lo >= 0.0) and (h_hi >= 0.0)
-            build_ok = self._h_build(net_i) >= 0.0
-
-            violations[i] = not (soc_ok and build_ok and grid_ok)
-
-        return violations
-
-    # ------------------------------------------------------------------
-    # QP projection (Algorithm 1)
-    # ------------------------------------------------------------------
-
-    def project(
-        self,
-        actions: np.ndarray,
-        states: List[np.ndarray],
-        adj: Optional[np.ndarray] = None,
-    ) -> np.ndarray:
-        """Project nominal actions onto the safe action set (Eq 19-20).
-
-        Parameters
-        ----------
-        actions : np.ndarray, shape (B, action_dim)
-        states  : List of B observation arrays
-        adj     : ignored (kept for API consistency)
-
-        Returns
-        -------
-        safe_actions : np.ndarray, shape (B, action_dim)
-        """
-        # Algorithm 1, lines 4-6: check if all constraints already satisfied.
-        # If so, return the nominal action directly (no QP needed).
-        if self._all_constraints_satisfied(actions, states):
-            return actions.copy()
-
-        if _CVXPY_AVAILABLE:
-            return self._qp_project(actions, states)
+        costs = np.zeros((B, 3), dtype=np.float32)
+        costs[:, 0] = ((next_soc < self.cfg.SOC_min) | (next_soc > self.cfg.SOC_max)).astype(np.float32)
+        if self.nominal_power is not None:
+            pred = net + np.maximum(actions[:, self.elec_idx], 0.0) * self.nominal_power
+            costs[:, 1] = (np.abs(pred) > self.cfg.P_building_max).astype(np.float32)
+            costs[:, 2] = float(np.maximum(pred, 0.0).sum() > self.cfg.P_grid_max)
         else:
-            return self._clip_project(actions, states)
-
-    # ------------------------------------------------------------------
-    def _all_constraints_satisfied(
-        self,
-        actions: np.ndarray,
-        states: List[np.ndarray],
-    ) -> bool:
-        """Return True iff all CBF constraints are satisfied (Algorithm 1, line 4)."""
-        total_positive_net = sum(max(0.0, float(s[_IDX_NET])) for s in states)
-        if self._h_grid(total_positive_net) < 0.0:
-            return False
-        for i in range(self.B):
-            soc = float(states[i][_IDX_SOC_ELEC])
-            elec_idx = self._elec_idx(actions.shape[1])
-            delta_soc = float(actions[i, elec_idx]) * self.SOC_DELTA_RATE
-            h_lo, h_hi = self._h_soc(soc, delta_soc)
-            if h_lo < 0.0 or h_hi < 0.0:
-                return False
-            if self._h_build(float(states[i][_IDX_NET])) < 0.0:
-                return False
-        return True
-
-    # ------------------------------------------------------------------
-    # Approximate power contribution per unit action (dhw, battery, cooling)
-    POWER_FACTORS: list = [0.05, 0.1, 0.5]
-
-    def _qp_project(self, actions: np.ndarray, states: List[np.ndarray]) -> np.ndarray:
-        """QP-based projection using cvxpy with the SCS solver (Eq 19-20)."""
-        B, action_dim = actions.shape
-        safe_actions = actions.copy()
-        # Eq 18: only positive (import) contributions count against P_grid_max
-        total_positive_net = sum(max(0.0, float(s[_IDX_NET])) for s in states)
-
-        for i in range(B):
-            a_nom = actions[i]            # (action_dim,)
-            soc = float(states[i][_IDX_SOC_ELEC])
-            net_i = float(states[i][_IDX_NET])
-
-            u = cp.Variable(action_dim)
-            cost = cp.sum_squares(u - a_nom)
-            constraints = []
-
-            # SOC constraints (Eq 16): h_battery >= 0
-            elec_idx = self._elec_idx(action_dim)
-            delta_soc = u[elec_idx] * self.SOC_DELTA_RATE
-            constraints.append(soc + delta_soc >= self.cfg.SOC_min)
-            constraints.append(soc + delta_soc <= self.cfg.SOC_max)
-
-            # Building power constraint (Eq 17): P_building_max - |e_pred| >= 0
-            pf = self._power_factors(action_dim)
-            predicted_delta = sum(
-                pf[d] * (u[d] - float(a_nom[d]))
-                for d in range(action_dim)
-            )
-            predicted_net = net_i + predicted_delta
-            constraints.append(predicted_net <= self.cfg.P_building_max)
-            constraints.append(predicted_net >= -self.cfg.P_building_max)
-
-            # Grid power constraint (Eq 18): P_grid_max - Σmax(0,e) >= 0
-            # Approximate: the building's predicted import is max(0, predicted_net)
-            predicted_import = cp.maximum(predicted_net, 0)
-            other_positive = total_positive_net - max(0.0, net_i)
-            constraints.append(other_positive + predicted_import <= self.cfg.P_grid_max)
-
-            # Action range
-            constraints.append(u >= -self.action_scale)
-            constraints.append(u <= self.action_scale)
-
-            prob = cp.Problem(cp.Minimize(cost), constraints)
-            try:
-                prob.solve(solver=cp.SCS, verbose=False)
-                if prob.status in (cp.OPTIMAL, cp.OPTIMAL_INACCURATE) and u.value is not None:
-                    safe_actions[i] = np.clip(u.value, -self.action_scale, self.action_scale)
-                else:
-                    # Infeasible: emergency conservative action
-                    safe_actions[i] = np.zeros(action_dim)
-            except Exception:
-                safe_actions[i] = np.zeros(action_dim)
-
-        return safe_actions
-
-    # ------------------------------------------------------------------
-    def _clip_project(self, actions: np.ndarray, states: List[np.ndarray]) -> np.ndarray:
-        """Analytical clipping fallback when cvxpy is unavailable.
-
-        Clips all action dimensions to [-action_scale, action_scale] and clips
-        the electrical-storage action further to respect SOC bounds.
-        """
-        B, action_dim = actions.shape
-        safe_actions = np.clip(actions.copy(), -self.action_scale, self.action_scale)
-        elec_idx = self._elec_idx(action_dim)
-
-        for i in range(B):
-            soc = float(states[i][_IDX_SOC_ELEC])
-
-            if action_dim > 0:
-                a_elec = float(actions[i, elec_idx])
-                max_charge    = (self.cfg.SOC_max - soc) / self.SOC_DELTA_RATE
-                max_discharge = (soc - self.cfg.SOC_min) / self.SOC_DELTA_RATE
-                a_elec = float(np.clip(a_elec, -max_discharge, max_charge))
-                safe_actions[i, elec_idx] = float(np.clip(a_elec, -self.action_scale, self.action_scale))
-
-        return safe_actions
+            costs[:, 1] = (np.abs(net) > self.cfg.P_building_max).astype(np.float32)
+            costs[:, 2] = float(np.maximum(net, 0.0).sum() > self.cfg.P_grid_max)
+        return costs
 
 
 # ---------------------------------------------------------------------------
-# NeuralSafetyFilter
+# Optional extension (off by default, not part of the headline experiment)
 # ---------------------------------------------------------------------------
 
 class NeuralSafetyFilter(nn.Module):
-    """Differentiable learned safety filter.
+    """Differentiable learned safety filter -- EXPERIMENTAL, off by default.
 
-    Replaces the fixed CBF QP shield with a neural network trained offline on
-    (obs, a_nominal) → a_safe pairs generated by the CBF oracle.  Because it is
-    fully differentiable, safety gradients flow directly into actor learning
-    during the policy update step.
-
-    At inference time, MC-Dropout uncertainty is measured over E forward passes.
-    If uncertainty (ensemble std) exceeds `uncertainty_threshold`, the module
-    raises a flag and the caller falls back to the CBF QP.
-
-    Parameters
-    ----------
-    obs_dim : int        – per-building observation dimension
-    action_dim : int     – per-building action dimension
-    hidden_dim : int     – width of hidden layers (default 128)
-    num_ensemble : int   – MC-Dropout samples for uncertainty (default 5)
-    dropout_rate : float – Dropout probability during MC sampling (default 0.1)
-    uncertainty_threshold : float – fallback threshold on ensemble std (default 0.05)
-    cbf_config : CBFConfig – constraint bounds for the differentiable penalty
+    A network trained offline on (obs, a_nom) -> a_safe pairs from the CBF
+    oracle, with MC-Dropout uncertainty triggering a CBF fallback. It is a
+    beyond-paper extension and is *not* used by the headline experiment; the
+    feasibility-guaranteed analytic CBF above is. Kept here for ablation only.
     """
 
-    SOC_DELTA_RATE: float = 0.1    # must match CBFShield and mock env dynamics
-
-    def __init__(
-        self,
-        obs_dim: int,
-        action_dim: int,
-        hidden_dim: int = 128,
-        num_ensemble: int = 5,
-        dropout_rate: float = 0.1,
-        uncertainty_threshold: float = 0.05,
-        cbf_config: Optional[CBFConfig] = None,
-        electrical_storage_action_index: Optional[int] = None,
-    ) -> None:
+    def __init__(self, obs_dim: int, action_dim: int, hidden_dim: int = 128,
+                 num_ensemble: int = 5, dropout_rate: float = 0.1,
+                 uncertainty_threshold: float = 0.05,
+                 cbf_shield: Optional[CBFShield] = None) -> None:
         super().__init__()
         self.obs_dim = obs_dim
         self.action_dim = action_dim
         self.E = num_ensemble
         self.uncertainty_threshold = uncertainty_threshold
-        self.cfg = cbf_config or CBFConfig()
-        self.electrical_storage_action_index = (
-            1 if electrical_storage_action_index is None and action_dim > 2
-            else 0 if electrical_storage_action_index is None
-            else max(0, min(int(electrical_storage_action_index), action_dim - 1))
-        )
-
-        in_dim = obs_dim + action_dim
-
-        # Trunk: 3 × (Linear → LayerNorm → ReLU → Dropout)
+        self.cbf = cbf_shield
         self.trunk = nn.Sequential(
-            nn.Linear(in_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(p=dropout_rate),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(p=dropout_rate),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(p=dropout_rate),
+            nn.Linear(obs_dim + action_dim, hidden_dim), nn.LayerNorm(hidden_dim),
+            nn.ReLU(), nn.Dropout(dropout_rate),
+            nn.Linear(hidden_dim, hidden_dim), nn.LayerNorm(hidden_dim),
+            nn.ReLU(), nn.Dropout(dropout_rate),
+            nn.Linear(hidden_dim, hidden_dim), nn.LayerNorm(hidden_dim),
+            nn.ReLU(), nn.Dropout(dropout_rate),
         )
-
-        # Head: projects to action space, Tanh to stay in [-1, 1]
-        self.head = nn.Sequential(
-            nn.Linear(hidden_dim, action_dim),
-            nn.Tanh(),
-        )
+        self.head = nn.Sequential(nn.Linear(hidden_dim, action_dim), nn.Tanh())
         nn.init.uniform_(self.head[0].weight, -3e-3, 3e-3)
         nn.init.uniform_(self.head[0].bias, -3e-3, 3e-3)
 
-        # Running flag set by forward() – True when last call fell back to QP
-        self.last_used_fallback: bool = False
-
-    # ------------------------------------------------------------------
     def forward(self, obs: torch.Tensor, a_nom: torch.Tensor) -> torch.Tensor:
-        """Single deterministic forward pass (used during training backprop).
+        return self.head(self.trunk(torch.cat([obs, a_nom], dim=-1)))
 
-        Parameters
-        ----------
-        obs   : (B, obs_dim)
-        a_nom : (B, action_dim)
-
-        Returns
-        -------
-        a_safe : (B, action_dim) in [-1, 1]
-        """
-        x = torch.cat([obs, a_nom], dim=-1)   # (B, obs_dim + action_dim)
-        return self.head(self.trunk(x))
-
-    # ------------------------------------------------------------------
-    def predict(
-        self,
-        obs_np: np.ndarray,
-        a_nom_np: np.ndarray,
-        device: torch.device,
-        cbf_fallback: "CBFShield",
-        states: List[np.ndarray],
-    ) -> Tuple[np.ndarray, bool]:
-        """MC-Dropout inference with uncertainty-triggered CBF fallback.
-
-        Parameters
-        ----------
-        obs_np     : (B, obs_dim) float32
-        a_nom_np   : (B, action_dim) float32
-        device     : torch device
-        cbf_fallback : CBFShield – used when uncertainty is too high
-        states     : List[np.ndarray] – raw obs list for CBF
-
-        Returns
-        -------
-        safe_actions : (B, action_dim)
-        used_fallback : bool – True if uncertainty triggered QP fallback
-        """
-        obs_t = torch.tensor(obs_np, dtype=torch.float32, device=device)
-        a_t = torch.tensor(a_nom_np, dtype=torch.float32, device=device)
-
-        # Enable Dropout for MC sampling
-        self.train()
-        with torch.no_grad():
-            samples = torch.stack(
-                [self.head(self.trunk(torch.cat([obs_t, a_t], dim=-1))) for _ in range(self.E)],
-                dim=0,
-            )  # (E, B, action_dim)
-
-        mean = samples.mean(dim=0)        # (B, action_dim)
-        std  = samples.std(dim=0)         # (B, action_dim)
-        max_uncertainty = float(std.max().item())
-
-        self.eval()
-        self.last_used_fallback = False
-
-        if max_uncertainty > self.uncertainty_threshold:
-            # Uncertainty too high – fall back to verified CBF QP
-            self.last_used_fallback = True
-            return cbf_fallback.project(a_nom_np, states), True
-
-        return mean.cpu().numpy(), False
-
-    # ------------------------------------------------------------------
-    # Differentiable constraint penalty (for offline training loss)
-    # ------------------------------------------------------------------
-
-    def constraint_penalty(
-        self,
-        obs: torch.Tensor,
-        a_safe: torch.Tensor,
-    ) -> torch.Tensor:
-        """Soft constraint violation penalty – differentiable w.r.t. a_safe.
-
-        Computes ReLU(−h_k) for each constraint k, averaged over the batch.
-        This makes the training loss aware of constraint satisfaction so the
-        network learns to be safe, not just to imitate the QP output.
-
-        Constraints (per building i):
-            h1_lo = SOC_i + a_{i,1}·δ − SOC_min  ≥ 0   (SOC lower bound)
-            h1_hi = SOC_max − SOC_i − a_{i,1}·δ  ≥ 0   (SOC upper bound)
-            h2    = P_build_max − |net_i|          ≥ 0   (building power, approx)
-
-        Grid constraint is handled approximately: Σ relu(net_i) ≤ P_grid_max.
-
-        Parameters
-        ----------
-        obs    : (B, obs_dim)
-        a_safe : (B, action_dim) – the filter's predicted safe action
-
-        Returns
-        -------
-        penalty : scalar tensor
-        """
-        soc   = obs[:, _IDX_SOC_ELEC]   # (B,)
-        net   = obs[:, _IDX_NET]         # (B,)
-        elec_idx = self.electrical_storage_action_index
-        delta = a_safe[:, elec_idx] * self.SOC_DELTA_RATE  # (B,) SOC change
-
-        # SOC bounds
-        h_soc_lo = soc + delta - self.cfg.SOC_min   # (B,)
-        h_soc_hi = self.cfg.SOC_max - soc - delta    # (B,)
-
-        # Building power (approximate: treat net as fixed, apply delta)
-        pf_battery = 0.1
-        net_pred = net + pf_battery * a_safe[:, elec_idx]
-        h_build_pos = self.cfg.P_building_max - net_pred
-        h_build_neg = net_pred + self.cfg.P_building_max
-
-        # Grid power (approximate sum)
-        grid_import = torch.relu(net).sum()
-        h_grid = torch.tensor(self.cfg.P_grid_max, device=obs.device) - grid_import
-
-        violations = torch.cat([
-            torch.relu(-h_soc_lo),
-            torch.relu(-h_soc_hi),
-            torch.relu(-h_build_pos),
-            torch.relu(-h_build_neg),
-            torch.relu(-h_grid).unsqueeze(0),
-        ])
-        return violations.mean()
-
-    # ------------------------------------------------------------------
-    # Pretraining loss (MSE imitation + constraint penalty)
-    # ------------------------------------------------------------------
-
-    def loss(
-        self,
-        obs: torch.Tensor,
-        a_nom: torch.Tensor,
-        a_safe_qp: torch.Tensor,
-        alpha: float = 0.5,
-    ) -> torch.Tensor:
-        """Offline training loss.
-
-        L = MSE(filter(obs, a_nom), a_safe_qp) + α · constraint_penalty
-
-        Parameters
-        ----------
-        obs       : (B, obs_dim)
-        a_nom     : (B, action_dim) – nominal (unsafe) action
-        a_safe_qp : (B, action_dim) – oracle safe action from CBF QP
-        alpha     : weight on the constraint penalty term
-
-        Returns
-        -------
-        scalar loss tensor
-        """
-        a_pred = self.forward(obs, a_nom)
-        mse = nn.functional.mse_loss(a_pred, a_safe_qp)
-        penalty = self.constraint_penalty(obs, a_pred)
-        return mse + alpha * penalty
+    def loss(self, obs: torch.Tensor, a_nom: torch.Tensor,
+             a_safe_qp: torch.Tensor) -> torch.Tensor:
+        return nn.functional.mse_loss(self.forward(obs, a_nom), a_safe_qp)

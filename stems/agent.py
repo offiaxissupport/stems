@@ -1,11 +1,23 @@
-"""
-STEMS Agent: Actor, Critic, and STEMSAgent (Eq 22-26, Algorithm 2).
+"""STEMS agent: Actor, Critic, CostCritic and the STEMSAgent orchestrator.
 
-Actor  π_θ(r_i) : policy network – maps representation r_i to action (Eq 22)
-Critic V_φ(r_i) : value network  – estimates state value V(r_i)        (Eq 23)
+Learning algorithm: PPO-Lagrangian (Schulman et al. 2017; Ray et al. 2019) on a
+shared spatial-temporal encoder with one actor, critic and cost critic per
+building.
 
-STEMSAgent orchestrates the encoder, actor/critic, and CBF shield for all B
-buildings.  Training follows the advantage actor-critic update in Eq 24-26.
+* Policy: a = tanh(z), z ~ N(mu(r), sigma(r)). The behaviour log-density
+  log N(z; mu, sigma) is recorded when z is sampled; the tanh Jacobian does not
+  depend on the parameters, so it cancels in the importance ratio.
+* Shield: the feasibility-guaranteed CBF (``stems.cbf.CBFShield``) projects the
+  sampled action before it is executed. By default it is treated as part of the
+  environment (``TrainingConfig.actor_target = "raw"``), which keeps the
+  policy-gradient estimator consistent.
+* Advantages: GAE(lambda) on rewards scaled by a running SD of the discounted
+  return; the end of a training window is a time limit, so the last step
+  bootstraps from V(s').
+* Safety pressure: per-constraint cost critics give GAE cost advantages, and the
+  actor maximises (A_r - sum_k lambda_k A_c,k) / (1 + sum_k lambda_k), with the
+  multipliers driven by a PID controller on the episode violation rate
+  (Stooke et al. 2020).
 """
 
 from __future__ import annotations
@@ -20,26 +32,18 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
-from stems.config import STEMSConfig, LagrangianConfig
+from stems.config import STEMSConfig
 from stems.encoder import STEncoder
-from stems.cbf import CBFShield, NeuralSafetyFilter
+from stems.cbf import CBFShield
 from stems.graph import BuildingGraph
+from stems.utils import RunningNormalizer
 
-
-# --------------------------------------------------------------------------
-# Actor network (Eq 22) – stochastic SAC policy
-# --------------------------------------------------------------------------
 
 class Actor(nn.Module):
-    r"""Stochastic SAC policy π_θ(r_i).
+    r"""Stochastic SAC policy pi_theta(r_i) (Eq. 22).
 
-    Eq 22:  a_i = Tanh(z),  z ~ N(μ(r_i), σ²(r_i))
-
-    log π(a|r) = log N(z; μ, σ) − Σ_d log(1 − tanh²(z_d))  [tanh correction]
-
-    forward() returns (mean, log_std) of the pre-tanh Gaussian.
-    sample()  returns (squashed_action, log_prob) via reparameterisation.
-    log_prob_of() evaluates log π(stored_action | repr) using atanh inversion.
+    a = tanh(z), z ~ N(mu(r), sigma(r)); the log-prob carries the tanh Jacobian
+    correction -Sigma_d log(1 - tanh^2 z_d).
     """
 
     LOG_STD_MIN: float = -5.0
@@ -48,10 +52,8 @@ class Actor(nn.Module):
     def __init__(self, input_dim: int, hidden_dim: int, action_dim: int) -> None:
         super().__init__()
         self.trunk = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
+            nn.Linear(input_dim, hidden_dim), nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim), nn.ReLU(),
         )
         self.mean_head = nn.Linear(hidden_dim, action_dim)
         self.log_std_head = nn.Linear(hidden_dim, action_dim)
@@ -59,123 +61,67 @@ class Actor(nn.Module):
         nn.init.uniform_(self.mean_head.bias, -3e-3, 3e-3)
 
     def forward(self, r: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Return (mean, log_std) of the pre-tanh Gaussian."""
         feat = self.trunk(r)
         mean = self.mean_head(feat)
         log_std = self.log_std_head(feat).clamp(self.LOG_STD_MIN, self.LOG_STD_MAX)
         return mean, log_std
 
-    def sample(self, r: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Reparameterised sample + tanh squash with log-prob correction.
-
-        Returns
-        -------
-        action   : Tensor (*, action_dim) in [-1, 1]
-        log_prob : Tensor (*,)
-        """
+    def distribution(self, r: torch.Tensor) -> torch.distributions.Normal:
+        """The pre-squash Gaussian N(mu(r), sigma(r))."""
         mean, log_std = self.forward(r)
-        std = log_std.exp()
-        normal = torch.distributions.Normal(mean, std)
-        z = normal.rsample()                        # reparameterised
-        action = torch.tanh(z)
-        log_prob = (
-            normal.log_prob(z) - torch.log(1.0 - action.pow(2) + 1e-6)
-        ).sum(dim=-1)
-        return action, log_prob
+        return torch.distributions.Normal(mean, log_std.exp())
 
-    def log_prob_of(self, r: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
-        """Log probability of a stored (tanh-squashed) action via atanh inversion.
+    @staticmethod
+    def pre_tanh_of(a: torch.Tensor) -> torch.Tensor:
+        """z = atanh(a), for actions that were not sampled by this actor."""
+        return torch.atanh(a.clamp(-1.0 + 1e-6, 1.0 - 1e-6))
 
-        Parameters
-        ----------
-        r : representation (N, repr_dim)
-        a : stored squashed action in (-1, 1) (N, action_dim)
-
-        Returns
-        -------
-        log_prob : (N,)
-        """
-        mean, log_std = self.forward(r)
-        std = log_std.exp()
-        z = torch.atanh(a.clamp(-1.0 + 1e-6, 1.0 - 1e-6))
-        normal = torch.distributions.Normal(mean, std)
-        log_prob = (
-            normal.log_prob(z) - torch.log(1.0 - a.pow(2) + 1e-6)
-        ).sum(dim=-1)
-        return log_prob
-
-
-# --------------------------------------------------------------------------
-# Critic network (Eq 23)
-# --------------------------------------------------------------------------
 
 class Critic(nn.Module):
-    r"""State-value V_φ(r_i).
-
-    Eq 23:  V_i = W_2 * ReLU(W_1 * r_i + b_1) + b_2
-    """
+    r"""State-value V_phi(r_i) (Eq. 23)."""
 
     def __init__(self, input_dim: int, hidden_dim: int) -> None:
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
+            nn.Linear(input_dim, hidden_dim), nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim), nn.ReLU(),
             nn.Linear(hidden_dim, 1),
         )
 
     def forward(self, r: torch.Tensor) -> torch.Tensor:
-        return self.net(r).squeeze(-1)   # (B,)
+        return self.net(r).squeeze(-1)
 
-
-# --------------------------------------------------------------------------
-# CostCritic network – k outputs, one per safety constraint
-# --------------------------------------------------------------------------
 
 class CostCritic(nn.Module):
-    r"""Per-building cost value network V^c_k(r_i).
+    r"""Per-building cost value V^c_k(r_i), one output per safety constraint."""
 
-    Estimates expected cumulative violation cost for each of the k=3 safety
-    constraints independently (SOC bounds, per-building power, grid power).
-
-    Output: (batch, NUM_CONSTRAINTS)
-    """
-
-    NUM_CONSTRAINTS: int = 3   # h1 (SOC), h2 (building power), h3 (grid power)
-
-    def __init__(self, input_dim: int, hidden_dim: int) -> None:
+    def __init__(self, input_dim: int, hidden_dim: int, num_constraints: int = 3) -> None:
         super().__init__()
+        self.num_constraints = num_constraints
         self.net = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, self.NUM_CONSTRAINTS),
+            nn.Linear(input_dim, hidden_dim), nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim), nn.ReLU(),
+            nn.Linear(hidden_dim, num_constraints),
         )
         nn.init.uniform_(self.net[-1].weight, -3e-3, 3e-3)
         nn.init.uniform_(self.net[-1].bias, -3e-3, 3e-3)
 
     def forward(self, r: torch.Tensor) -> torch.Tensor:
-        return self.net(r)   # (batch, 3)
+        return self.net(r)
 
-
-# --------------------------------------------------------------------------
-# STEMSAgent
-# --------------------------------------------------------------------------
 
 class STEMSAgent:
-    """Coordinates the encoder, per-building actors/critics, and CBF shield.
+    """Coordinates encoder, per-building actors/critics, and the CBF shield.
 
     Parameters
     ----------
-    obs_dim      : int  – observation dimension
-    action_dim   : int  – action dimension per building
-    num_buildings: int  – number of buildings B
-    building_graph: BuildingGraph – pre-built graph object
-    config       : STEMSConfig   – full hyperparameter configuration
-    use_cbf      : bool – whether to apply the CBF safety shield
-    device       : str  – 'cpu' or 'cuda'
+    obs_dim, action_dim, num_buildings : ints describing the environment.
+    building_graph : BuildingGraph -- pre-built adjacency provider.
+    config : STEMSConfig -- full hyperparameter configuration.
+    battery_info : dict | None -- env.battery_info() output. Required for a real
+        run; its ``soc_rate`` (and ``nominal_power``) calibrate the CBF.
+    use_cbf : bool -- apply the CBF safety shield.
+    electrical_storage_action_index : int -- battery action position.
     """
 
     def __init__(
@@ -185,9 +131,17 @@ class STEMSAgent:
         num_buildings: int,
         building_graph: BuildingGraph,
         config: Optional[STEMSConfig] = None,
+        battery_info: Optional[Dict[str, np.ndarray]] = None,
         use_cbf: bool = True,
         device: str = "cpu",
-        electrical_storage_action_index: Optional[int] = None,
+        electrical_storage_action_index: int = 1,
+        control_indices: Optional[List[int]] = None,
+        dhw_barrier: Optional[object] = None,
+        cop_model: Optional[object] = None,
+        hvac_action_index: int = -1,
+        deadline_barriers: Optional[List[object]] = None,
+        coordination: str = "independent",
+        battery_model: Optional[object] = None,
     ) -> None:
         self.obs_dim = obs_dim
         self.action_dim = action_dim
@@ -196,14 +150,14 @@ class STEMSAgent:
         self.cfg = config or STEMSConfig()
         self.use_cbf = use_cbf
         self.device = torch.device(device)
-        if electrical_storage_action_index is None:
-            electrical_storage_action_index = 1 if action_dim > 2 else 0
-        self.electrical_storage_action_index = int(electrical_storage_action_index)
+        self.elec_idx = int(electrical_storage_action_index)
+        # Actuators the agent is allowed to drive; others are held at 0 (neutral).
+        # Used for restricted studies such as heat-pump-only control.
+        self.control_indices = (list(range(action_dim)) if control_indices is None
+                                else list(control_indices))
 
-        # Compute and cache adjacency matrix
         self.adj = self.graph.compute_edge_weights().to(self.device)
 
-        # Shared spatial-temporal encoder
         self.encoder = STEncoder(
             obs_dim=obs_dim,
             spatial_dim=self.cfg.gcn.hidden_dim,
@@ -213,584 +167,371 @@ class STEMSAgent:
             num_heads=self.cfg.transformer.num_heads,
             window_size=self.cfg.transformer.window_size,
         ).to(self.device)
-
         repr_dim = self.cfg.fusion.output_dim
+        hidden = self.cfg.actor_critic.hidden_dim
+        K = self.cfg.lagrangian.num_constraints
 
-        # Per-building actors and critics
-        self.actors = nn.ModuleList([
-            Actor(repr_dim, self.cfg.actor_critic.hidden_dim, action_dim)
-            for _ in range(self.B)
-        ]).to(self.device)
-
-        self.critics = nn.ModuleList([
-            Critic(repr_dim, self.cfg.actor_critic.hidden_dim)
-            for _ in range(self.B)
-        ]).to(self.device)
+        # One actor / critic / cost critic per building (the paper's layout), or a
+        # single set shared by all buildings (``share_parameters``): every
+        # building's transitions then update the same networks, B times the data
+        # per gradient step, with the building told apart by its own encoded
+        # observation. Standard in cooperative multi-agent PPO (Yu et al. 2022).
+        n = 1 if self.cfg.actor_critic.share_parameters else self.B
+        self.actors = nn.ModuleList([Actor(repr_dim, hidden, action_dim)
+                                     for _ in range(n)]).to(self.device)
+        self.critics = nn.ModuleList([Critic(repr_dim, hidden)
+                                      for _ in range(n)]).to(self.device)
+        self.cost_critics = nn.ModuleList([CostCritic(repr_dim, hidden, K)
+                                           for _ in range(n)]).to(self.device)
 
         lr = self.cfg.actor_critic.lr
+        self.optimizer = optim.Adam(
+            list(self.encoder.parameters()) + list(self.actors.parameters())
+            + list(self.critics.parameters()) + list(self.cost_critics.parameters()), lr=lr)
+        # Running SD of the discounted return, used to scale rewards.
+        self.return_normalizer = RunningNormalizer(1).to(self.device)
 
-        # Optimisers – one per component (Eq 26: combined encoder gradient)
-        self.encoder_optimizer = optim.Adam(self.encoder.parameters(), lr=lr)
-        self.actor_optimizer = optim.Adam(self.actors.parameters(), lr=lr)
-        self.critic_optimizer = optim.Adam(self.critics.parameters(), lr=lr)
+        # Lagrangian state (PID controller on the constraint-cost error).
+        lag = self.cfg.lagrangian
+        self._lambdas = torch.full((K,), lag.lambda_init, device=self.device)
+        self._cost_integral = torch.full((K,), lag.lambda_init, device=self.device)
+        self._prev_cost = torch.zeros(K, device=self.device)
+        self._cost_limit = torch.full((K,), lag.cost_limit, device=self.device)
 
-        # Target critics: slow-moving EMA copies for stable Bellman bootstrap.
-        # Without target networks the value estimate and its own bootstrap target
-        # move together, causing oscillation and divergence.
-        self.target_critics = copy.deepcopy(self.critics).to(self.device)
-        for p in self.target_critics.parameters():
-            p.requires_grad_(False)
-        self._target_tau: float = 0.005  # polyak averaging rate
-
-        # SAC temperature α (auto-tuning via log_alpha dual variable).
-        # Target entropy H* = −|A| (standard SAC heuristic).
-        self._target_entropy: float = -float(action_dim)
-        self.log_alpha = torch.zeros(1, requires_grad=True, device=self.device)
-        self.alpha_optimizer = optim.Adam([self.log_alpha], lr=lr)
-
-        # Multi-constraint Lagrangian safety (one CostCritic per building, k=3 outputs)
-        # Addresses: separate cost signals + cost critics + independent λ per constraint.
-        lag_cfg = self.cfg.lagrangian
-        self._lag_cfg = lag_cfg
-        self.cost_critics = nn.ModuleList([
-            CostCritic(repr_dim, self.cfg.actor_critic.hidden_dim)
-            for _ in range(self.B)
-        ]).to(self.device)
-        self.cost_critic_optimizer = optim.Adam(self.cost_critics.parameters(), lr=lr)
-
-        # Lagrangian multipliers λ_k ≥ 0, one per constraint.
-        # Updated by gradient ascent on the Lagrangian dual (independent per constraint).
-        self._lambdas: torch.Tensor = torch.full(
-            (lag_cfg.num_constraints,),
-            lag_cfg.lambda_init,
-            dtype=torch.float32,
-            device=self.device,
-            requires_grad=True,
-        )
-        self.lambda_optimizer = optim.Adam([self._lambdas], lr=lag_cfg.lambda_lr)
-        self._cost_limit = torch.tensor(
-            [lag_cfg.cost_limit] * lag_cfg.num_constraints,
-            dtype=torch.float32,
-            device=self.device,
-        )
-
-        # CBF shield (verified fallback, used for offline data collection and
-        # as fallback when neural filter uncertainty is high)
+        # CBF shield, calibrated from the *real* per-building battery dynamics.
+        soc_rate = (np.asarray(battery_info["soc_rate"], dtype=np.float32)
+                    if battery_info is not None else None)
+        nominal_power = (np.asarray(battery_info["nominal_power"], dtype=np.float32)
+                         if battery_info is not None else None)
+        # Optional thermal barriers (heat-pump / DHW studies): anticipatory
+        # hot-water readiness (h4) and the weather-dependent CoP power guard.
+        # Both default to off, so the battery-only behaviour is unchanged.
         self.cbf = CBFShield(
-            config=self.cfg.cbf,
-            num_buildings=self.B,
-            action_scale=self.cfg.training.action_scale,
-            electrical_storage_action_index=self.electrical_storage_action_index,
+            config=self.cfg.cbf, num_buildings=self.B, soc_rate=soc_rate,
+            nominal_power=nominal_power, action_scale=self.cfg.training.action_scale,
+            elec_idx=self.elec_idx, safety_cfg=self.cfg.safety,
+            enforce_soc=(self.elec_idx in self.control_indices),
+            dhw_barrier=dhw_barrier, cop_model=cop_model,
+            hvac_idx=hvac_action_index,
+            deadline_barriers=deadline_barriers, coordination=coordination,
+            battery_model=battery_model,
         )
+        # The hot-water demand forecaster is online: it must see every observed
+        # step to build its hour-of-day climatology (see observe()).
+        self._dhw_forecaster = getattr(dhw_barrier, "forecaster", None)
 
-        # Neural Safety Filter – differentiable replacement for the CBF QP.
-        # Trained offline on (obs, a_nom, a_safe_qp) tuples; during online
-        # training its gradients flow into the actor via select_action().
-        self.neural_filter = NeuralSafetyFilter(
-            obs_dim=obs_dim,
-            action_dim=action_dim,
-            hidden_dim=128,
-            num_ensemble=5,
-            dropout_rate=0.1,
-            uncertainty_threshold=0.05,
-            cbf_config=self.cfg.cbf,
-            electrical_storage_action_index=self.electrical_storage_action_index,
-        ).to(self.device)
-        self.neural_filter_optimizer = optim.Adam(
-            self.neural_filter.parameters(), lr=lr
-        )
-        # Flag: use neural filter only after it has been pretrained
-        self.use_neural_filter: bool = False
-
-        # Running observation normalizer: zero-mean unit-std per feature.
-        # Raw obs spans wildly different scales (hour 0-23, net power -300 to
-        # 300 kW, SOC 0-1), which makes gradient magnitudes uneven and slows
-        # learning.  The normalizer is updated online from each training batch.
-        from stems.utils import RunningNormalizer
         self.obs_normalizer = RunningNormalizer(obs_dim).to(self.device)
-
-        # Training counters
         self._update_step = 0
+        # Latest sample, populated by select_action for the trajectory buffer:
+        # the policy's own action, the executed (shielded) action, and the
+        # behaviour record the importance ratio needs.
+        self._last_raw_actions = np.zeros((self.B, action_dim), dtype=np.float32)
+        self._last_safe_actions = np.zeros((self.B, action_dim), dtype=np.float32)
+        self._last_pre_tanh = np.zeros((self.B, action_dim), dtype=np.float32)
+        self._last_log_probs = np.zeros(self.B, dtype=np.float32)
+        self._ctrl = torch.tensor(self.control_indices, dtype=torch.long, device=self.device)
 
     # ------------------------------------------------------------------
-    def select_action(
-        self,
-        obs_list: List[np.ndarray],
-        history: np.ndarray,
-        explore: bool = True,
-    ) -> np.ndarray:
-        """Encode observations → actor → add noise → safety projection → scale.
+    def select_action(self, obs_list: List[np.ndarray], history: np.ndarray,
+                      explore: bool = True) -> np.ndarray:
+        """Encode -> sample actor -> CBF-project. Returns safe actions in [-1,1].
 
-        Safety projection uses:
-          - NeuralSafetyFilter  (when pretrained, use_neural_filter=True)
-          - CBFShield QP        (fallback when filter uncertainty is high, or
-                                 when neural filter is not yet pretrained)
-
-        The raw (QP) safe action is always stored in ``_last_qp_safe_actions``
-        for offline training data collection.  The neural filter's prediction
-        is stored in ``_last_safe_actions`` for policy gradient (Eq 24).
-
-        Parameters
-        ----------
-        obs_list : List of B arrays, shape (obs_dim,)
-        history  : np.ndarray, shape (B, T, obs_dim)
-        explore  : bool – add exploration noise if True
-
-        Returns
-        -------
-        actions : np.ndarray, shape (B, action_dim)  in [-1, 1]
+        Stores ``_last_raw_actions`` (pre-projection policy output) and
+        ``_last_safe_actions`` (post-CBF, the policy-gradient target for Eq. 24).
         """
         self.encoder.eval()
         for actor in self.actors:
             actor.eval()
-
         with torch.no_grad():
-            x = torch.tensor(
-                np.stack(obs_list, axis=0), dtype=torch.float32
-            ).to(self.device)                                              # (B, obs_dim)
-            h = torch.tensor(history, dtype=torch.float32).to(self.device)  # (B, T, obs_dim)
-
-            # Normalize observations before encoding (zero-mean, unit-std)
+            x = torch.tensor(np.stack(obs_list, axis=0), dtype=torch.float32, device=self.device)
+            h = torch.tensor(history, dtype=torch.float32, device=self.device)
             x_norm = self.obs_normalizer(x)
             h_norm = self.obs_normalizer(h.view(-1, self.obs_dim)).view(h.shape)
-
-            repr_mat = self.encoder(x_norm, self.adj, h_norm)             # (B, repr_dim)
-
-            actions_list = []
+            repr_mat = self.encoder(x_norm, self.adj, h_norm)
+            raw = np.empty((self.B, self.action_dim), dtype=np.float32)
+            pre = np.empty((self.B, self.action_dim), dtype=np.float32)
+            logp = np.zeros(self.B, dtype=np.float32)
             for i in range(self.B):
-                r_i = repr_mat[i].unsqueeze(0)                            # (1, repr_dim)
-                if explore:
-                    # Stochastic SAC sampling – exploration via policy entropy
-                    a_i, _ = self.actors[i].sample(r_i)
-                else:
-                    # Deterministic: use mean action (no tanh noise)
-                    mean, _ = self.actors[i](r_i)
-                    a_i = torch.tanh(mean)
-                actions_list.append(np.array(a_i.squeeze(0).detach().tolist(), dtype=np.float32))
+                dist = self.actors[i % len(self.actors)].distribution(repr_mat[i].unsqueeze(0))
+                z = dist.sample() if explore else dist.mean
+                logp[i] = float(dist.log_prob(z)[..., self._ctrl].sum())
+                pre[i] = z.squeeze(0).cpu().numpy()
+                raw[i] = torch.tanh(z).squeeze(0).cpu().numpy()
 
-        actions = np.stack(actions_list, axis=0)   # (B, action_dim)
+        self._last_raw_actions = raw.copy()
+        self._last_pre_tanh = pre
+        self._last_log_probs = logp
+        safe = self.cbf.project(raw, obs_list) if self.use_cbf else raw.copy()
+        safe = np.clip(safe, -1.0, 1.0).astype(np.float32)
+        if len(self.control_indices) < self.action_dim:
+            mask = np.zeros(self.action_dim, dtype=np.float32)
+            mask[self.control_indices] = 1.0
+            safe *= mask  # hold non-controlled actuators at neutral (0)
+        self._last_safe_actions = safe.copy()
+        return safe
 
-        # Store raw actions (pre-safety-projection)
-        self._last_raw_actions = actions.copy().astype(np.float32)
+    # ------------------------------------------------------------------
+    def observe(self, next_obs_list: List[np.ndarray]) -> None:
+        """Feed an observed step to the online DHW demand forecaster.
 
-        # Scale actions
-        actions = actions * self.cfg.training.action_scale
-
-        # --- Safety projection ---
-        # QP path: always run to generate oracle labels for neural filter training
-        if self.use_cbf:
-            qp_safe = self.cbf.project(actions, obs_list)
-        else:
-            qp_safe = actions.copy()
-
-        # Store QP-safe actions for offline neural filter training
-        inv_scale = 1.0 / max(self.cfg.training.action_scale, 1e-8)
-        self._last_qp_safe_actions = np.clip(
-            qp_safe * inv_scale, -1.0, 1.0
-        ).astype(np.float32)
-
-        # Neural filter path: use when pretrained; fall back to QP on high uncertainty
-        if self.use_neural_filter and self.use_cbf:
-            obs_np = np.stack(obs_list, axis=0).astype(np.float32)  # (B, obs_dim)
-            a_nom_np = (actions * inv_scale).astype(np.float32)       # (B, action_dim)
-            nf_safe, used_fallback = self.neural_filter.predict(
-                obs_np=obs_np,
-                a_nom_np=a_nom_np,
-                device=self.device,
-                cbf_fallback=self.cbf,
-                states=obs_list,
-            )
-            # Rescale to action_scale for environment
-            final_actions = np.clip(nf_safe, -1.0, 1.0).astype(np.float32)
-        else:
-            final_actions = qp_safe.astype(np.float32)
-            used_fallback = True  # using QP directly
-
-        self._last_filter_used_fallback: bool = used_fallback
-
-        # Policy gradient target: post-safety action in [-1,1]
-        self._last_safe_actions = np.clip(
-            final_actions * inv_scale, -1.0, 1.0
-        ).astype(np.float32)
-
-        return final_actions
+        Call once per environment step, after ``env.step``. No-op unless the
+        anticipatory hot-water barrier is active. Keeping ingestion explicit
+        (rather than hidden inside ``select_action``) means the forecaster only
+        ever sees states the agent actually visited, in order -- it stays causal.
+        """
+        if self._dhw_forecaster is not None:
+            self._dhw_forecaster.update(next_obs_list)
 
     # ------------------------------------------------------------------
     @staticmethod
-    def _compute_gae(
-        rewards: torch.Tensor,
-        values: torch.Tensor,
-        next_values: torch.Tensor,
-        dones: torch.Tensor,
-        gamma: float = 0.99,
-        lam: float = 0.95,
-    ) -> torch.Tensor:
-        """Generalised Advantage Estimation (GAE-λ).
+    def _compute_gae(rewards: torch.Tensor, values: torch.Tensor, next_values: torch.Tensor,
+                     episode_end: torch.Tensor, gamma: float, lam: float) -> torch.Tensor:
+        """GAE(lambda) over time (dim 0), for time-limited episodes.
 
-        Reduces variance of policy gradient on long episodes compared to 1-step TD.
-        A_t = Σ_{l=0}^{∞} (γλ)^l δ_{t+l},  δ_t = r_t + γV(s_{t+1})(1-d_t) - V(s_t)
-
-        Parameters
-        ----------
-        rewards     : (N,) per-timestep rewards for one building
-        values      : (N,) V(s_t) from critic
-        next_values : (N,) V(s_{t+1}) from target critic
-        dones       : (N,) episode termination flags (1.0 at terminal step)
-        gamma       : discount factor
-        lam         : GAE lambda (0=TD(0), 1=Monte Carlo); 0.95 is standard
-
-        Returns
-        -------
-        advantages : (N,) GAE estimates
+        No state in this domain is terminal -- an episode is a window of the
+        year -- so every step bootstraps from V(s'); ``episode_end`` only stops
+        the recursion from running across an episode boundary.
         """
-        N = rewards.shape[0]
-        advantages = torch.zeros_like(rewards)
-        last_gae = torch.tensor(0.0, device=rewards.device)
-        for t in reversed(range(N)):
-            delta = rewards[t] + gamma * next_values[t] * (1.0 - dones[t]) - values[t]
-            last_gae = delta + gamma * lam * (1.0 - dones[t]) * last_gae
-            advantages[t] = last_gae
-        return advantages
+        adv = torch.zeros_like(rewards)
+        last = torch.zeros_like(rewards[0])
+        for t in reversed(range(rewards.shape[0])):
+            delta = rewards[t] + gamma * next_values[t] - values[t]
+            last = delta + gamma * lam * (1.0 - episode_end[t]) * last
+            adv[t] = last
+        return adv
+
+    # ------------------------------------------------------------------
+    def _update_lambdas(self, mean_costs: torch.Tensor) -> None:
+        """PID-Lagrangian dual update (Stooke et al. 2020) on e_k = J_c_k - d.
+
+        With ``use_pid=False`` this reduces to integral-only plain dual ascent.
+        """
+        lag = self.cfg.lagrangian
+        with torch.no_grad():
+            err = mean_costs - self._cost_limit
+            if lag.use_pid:
+                self._cost_integral = torch.clamp(
+                    self._cost_integral + lag.pid_ki * err, 0.0, lag.lambda_max)
+                deriv = torch.relu(mean_costs - self._prev_cost)
+                self._lambdas = torch.clamp(
+                    lag.pid_kp * err + self._cost_integral + lag.pid_kd * deriv,
+                    0.0, lag.lambda_max)
+                self._prev_cost = mean_costs.clone()
+            else:
+                self._cost_integral = torch.clamp(
+                    self._cost_integral + lag.lambda_lr * err, 0.0, lag.lambda_max)
+                self._lambdas = self._cost_integral.clone()
 
     # ------------------------------------------------------------------
     def update(self, batch: Dict[str, Any]) -> Dict[str, float]:
-        """One gradient update step using a sampled mini-batch.
+        """One PPO-Lagrangian update on an episode trajectory (see module docstring).
 
-        Implements Eq 24-26 (advantage actor-critic update).
-
-        Parameters
-        ----------
-        batch : dict with keys 'obs', 'actions', 'rewards', 'next_obs', 'dones',
-                optionally 'history' and 'next_history'
-
-        Returns
-        -------
-        dict with 'actor_loss' and 'critic_loss'
+        Requires ``history``/``next_history``, ``safe_actions`` and, for the
+        default ``actor_target="raw"``, the behaviour record (``pre_tanh``,
+        ``behaviour_log_probs``); a missing field is a collector bug and raises.
         """
-        self.encoder.train()
-        for actor in self.actors:
-            actor.train()
-        for critic in self.critics:
-            critic.train()
+        cfgt = self.cfg.training
+        gamma, lam = self.cfg.actor_critic.gamma, float(cfgt.gae_lambda)
+        N, B = len(batch["obs"]), self.B
+        if cfgt.actor_target not in ("raw", "safe"):
+            raise ValueError(f"unknown actor_target {cfgt.actor_target!r}")
+        raw_target = cfgt.actor_target == "raw"
 
-        gamma = self.cfg.actor_critic.gamma
+        required = ["history", "next_history", "safe_actions"]
+        if raw_target:
+            required += ["pre_tanh", "behaviour_log_probs"]
+        for key in required:
+            if batch.get(key) is None:
+                raise KeyError(f"batch is missing required '{key}'. The trajectory "
+                               "collector must always store it (see experiments/runner.py).")
 
-        # Stack observations across batch
-        obs_batch = batch["obs"]             # list of N transitions, each is list of B arrays
-        next_obs_batch = batch["next_obs"]
-        rewards_batch = batch["rewards"]     # (N, B)
-        dones_batch = batch["dones"]         # (N,)
+        t = lambda x: torch.tensor(np.asarray(x, dtype=np.float32), device=self.device)
+        obs_nb, next_nb = t(batch["obs"]), t(batch["next_obs"])
+        if int(self.obs_normalizer.count) == 0:
+            # Warm-up: the first trajectory was collected on raw observations
+            # (irradiance in the hundreds next to prices of 0.2), and a gradient
+            # step on those moves the policy enormously (measured KL 4.9 after one
+            # step). It is used to fit the normaliser only; learning starts with
+            # the next episode, on normalised inputs.
+            with torch.no_grad():
+                self.obs_normalizer.update(obs_nb.view(-1, self.obs_dim))
+            return {"policy": 0.0, "value": 0.0, "cost_value": 0.0, "entropy": 0.0,
+                    "clip_frac": 0.0, "approx_kl": 0.0, "gradient_steps": 0,
+                    "stopped_early": False, "reward_scale": 1.0, "warmup": True,
+                    "lambdas": self._lambdas.detach().cpu().tolist()}
+        hist_nb, next_hist_nb = t(batch["history"]), t(batch["next_history"])
+        rewards = t(batch["rewards"])                                     # (N, B)
+        episode_end = t(batch["dones"])                                   # (N,)
+        costs = (t(batch["constraint_costs"]) if batch.get("constraint_costs") is not None
+                 else None)                                               # (N, B, K)
 
-        N = len(obs_batch)
-        B = self.B
+        # The normaliser is frozen for the whole update -- it is the one the
+        # behaviour policy acted with -- and absorbs this episode afterwards.
+        def encode(idx: torch.Tensor, use_next: bool = False) -> torch.Tensor:
+            src_o, src_h = (next_nb, next_hist_nb) if use_next else (obs_nb, hist_nb)
+            o = self.obs_normalizer(src_o[idx])
+            h = self.obs_normalizer(src_h[idx].reshape(-1, self.obs_dim)).view(src_h[idx].shape)
+            return self.encoder.batch_forward(o, self.adj, h)
 
-        # Build tensors (N*B, obs_dim)
-        obs_tensor = torch.zeros(N, B, self.obs_dim, device=self.device)
-        next_obs_tensor = torch.zeros(N, B, self.obs_dim, device=self.device)
+        all_idx = torch.arange(N, device=self.device)
+        for m in (self.encoder, *self.actors, *self.critics, *self.cost_critics):
+            m.eval()
 
-        for n in range(N):
-            for b in range(B):
-                obs_tensor[n, b] = torch.tensor(
-                    obs_batch[n][b], dtype=torch.float32
-                )
-                next_obs_tensor[n, b] = torch.tensor(
-                    next_obs_batch[n][b], dtype=torch.float32
-                )
+        # ---- targets, computed once from the behaviour-time networks -------
+        with torch.no_grad():
+            if cfgt.scale_rewards:
+                ret = torch.zeros_like(rewards)
+                running = torch.zeros(B, device=self.device)
+                for k in reversed(range(N)):
+                    running = rewards[k] + gamma * (1.0 - episode_end[k]) * running
+                    ret[k] = running
+                self.return_normalizer.update(ret.reshape(-1, 1))
+                scale = float(self.return_normalizer.var.sqrt().clamp_min(1e-6))
+            else:
+                scale = 1.0
+            r_scaled = rewards / scale
 
-        rewards_tensor = torch.tensor(rewards_batch, dtype=torch.float32).to(self.device)  # (N, B)
-        dones_tensor = torch.tensor(dones_batch, dtype=torch.float32).to(self.device)     # (N,)
+            repr_all, repr_next = encode(all_idx), encode(all_idx, use_next=True)
+            values = torch.stack([self.critics[b % len(self.critics)](repr_all[:, b]) for b in range(B)], 1)
+            next_values = torch.stack([self.critics[b % len(self.critics)](repr_next[:, b]) for b in range(B)], 1)
+            adv = self._compute_gae(r_scaled, values, next_values, episode_end, gamma, lam)
+            returns = adv + values                                        # lambda-returns
+            adv = (adv - adv.mean(0)) / (adv.std(0) + 1e-8)               # per building
 
-        # Constraint cost tensor (N, B, K) – binary violation indicators per constraint.
-        # Present when train.py passes constraint_costs; absent for legacy batches.
-        has_costs = "constraint_costs" in batch and batch["constraint_costs"] is not None
-        if has_costs:
-            costs_tensor = torch.tensor(
-                batch["constraint_costs"], dtype=torch.float32
-            ).to(self.device)  # (N, B, 3): k=0 SOC, k=1 building power, k=2 grid power
-        else:
-            costs_tensor = None
+            if costs is not None:
+                cv = torch.stack([self.cost_critics[b % len(self.cost_critics)](repr_all[:, b]) for b in range(B)], 1)
+                cnv = torch.stack([self.cost_critics[b % len(self.cost_critics)](repr_next[:, b]) for b in range(B)], 1)
+                cadv = self._compute_gae(costs, cv, cnv, episode_end, gamma, lam)  # (N, B, K)
+                cost_returns = cadv + cv
+                cadv = cadv - cadv.mean(0)                                # centred, unscaled
+                lam_k = torch.clamp(self._lambdas, min=0.0)
+                eff_adv = (adv - (cadv * lam_k).sum(-1)) / (1.0 + lam_k.sum())
+            else:
+                cost_returns, eff_adv = None, adv
 
-        total_actor_loss = 0.0
-        total_critic_loss = 0.0
-        total_cost_critic_loss = 0.0
+            if raw_target:
+                z_all = t(batch["pre_tanh"])                              # (N, B, A)
+                old_logp = t(batch["behaviour_log_probs"])                # (N, B)
+            else:
+                z_all = Actor.pre_tanh_of(t(batch["safe_actions"]))
+                old_logp = torch.stack(
+                    [self.actors[b % len(self.actors)].distribution(repr_all[:, b]).log_prob(z_all[:, b])
+                     [..., self._ctrl].sum(-1) for b in range(B)], 1)
 
-        T_win = self.cfg.transformer.window_size
+        # ---- minibatch epochs ---------------------------------------------
+        mb = max(2, min(int(cfgt.minibatch_size), N))
+        clip, ent_coef, v_coef = (float(cfgt.ppo_clip), float(cfgt.entropy_coef),
+                                  float(cfgt.value_coef))
+        params = [p for g in self.optimizer.param_groups for p in g["params"]]
+        sums = {"policy": 0.0, "value": 0.0, "cost_value": 0.0, "entropy": 0.0,
+                "clip_frac": 0.0, "approx_kl": 0.0}
+        n_updates = 0
+        for m in (self.encoder, *self.actors, *self.critics, *self.cost_critics):
+            m.train()
 
-        # Use the actual building adjacency during training to learn spatial coordination.
-        adj_id   = self.adj
-        obs_nb   = obs_tensor.view(N, B, self.obs_dim)
-        next_nb  = next_obs_tensor.view(N, B, self.obs_dim)
+        target_kl = cfgt.target_kl
+        stopped_early = False
+        for _ in range(max(1, int(cfgt.update_epochs))):
+            if stopped_early:
+                break
+            perm = torch.randperm(N, device=self.device)
+            for start in range(0, N, mb):
+                idx = perm[start:start + mb]
+                if idx.numel() < 2:
+                    continue
+                repr_mb = encode(idx)
+                zero = torch.zeros((), device=self.device)
+                policy_loss, value_loss, cost_value_loss, entropy = zero, zero, zero, zero
+                kl = clipped = 0.0
+                for b in range(B):
+                    r_b = repr_mb[:, b]
+                    dist = self.actors[b % len(self.actors)].distribution(r_b)
+                    logp = dist.log_prob(z_all[idx, b])[..., self._ctrl].sum(-1)
+                    log_ratio = logp - old_logp[idx, b]
+                    ratio = log_ratio.clamp(-20.0, 20.0).exp()
+                    a_b = eff_adv[idx, b]
+                    policy_loss = policy_loss - torch.min(
+                        ratio * a_b, ratio.clamp(1.0 - clip, 1.0 + clip) * a_b).mean()
+                    entropy = entropy + dist.entropy()[..., self._ctrl].sum(-1).mean()
+                    value_loss = value_loss + F.mse_loss(self.critics[b % len(self.critics)](r_b), returns[idx, b])
+                    if cost_returns is not None:
+                        cost_value_loss = cost_value_loss + F.mse_loss(
+                            self.cost_critics[b % len(self.cost_critics)](r_b), cost_returns[idx, b])
+                    with torch.no_grad():
+                        kl += float(((ratio - 1.0) - log_ratio).mean())
+                        clipped += float(((ratio - 1.0).abs() > clip).float().mean())
+                loss = (policy_loss + v_coef * (value_loss + cost_value_loss)
+                        - ent_coef * entropy) / B
+                self.optimizer.zero_grad()
+                loss.backward()
+                nn.utils.clip_grad_norm_(params, float(cfgt.max_grad_norm))
+                self.optimizer.step()
 
-        # Update running normalizer from this batch (online Welford update)
+                sums["policy"] += policy_loss.item() / B
+                sums["value"] += value_loss.item() / B
+                sums["cost_value"] += cost_value_loss.item() / B
+                sums["entropy"] += entropy.item() / B
+                sums["approx_kl"] += kl / B
+                sums["clip_frac"] += clipped / B
+                n_updates += 1
+                # KL early stopping (SpinningUp PPO): once the policy has moved
+                # this far from the behaviour policy, further epochs on the same
+                # data would leave the region the clipped surrogate is valid in.
+                if target_kl and kl / B > 1.5 * target_kl:
+                    stopped_early = True
+                    break
+
         with torch.no_grad():
             self.obs_normalizer.update(obs_nb.view(-1, self.obs_dim))
-        obs_nb_norm   = self.obs_normalizer(obs_nb)
-        next_nb_norm  = self.obs_normalizer(next_nb)
-
-        # Use stored history windows if available; otherwise fall back to dummy expansion
-        if "history" in batch and batch["history"] is not None:
-            hist_nb = torch.tensor(batch["history"], dtype=torch.float32).to(self.device)
-            next_hist_nb = torch.tensor(batch["next_history"], dtype=torch.float32).to(self.device)
-        else:
-            hist_nb      = obs_nb.unsqueeze(2).expand(N, B, T_win, self.obs_dim).contiguous()
-            next_hist_nb = next_nb.unsqueeze(2).expand(N, B, T_win, self.obs_dim).contiguous()
-
-        hist_nb_norm      = self.obs_normalizer(hist_nb.view(-1, self.obs_dim)).view(hist_nb.shape)
-        next_hist_nb_norm = self.obs_normalizer(next_hist_nb.view(-1, self.obs_dim)).view(next_hist_nb.shape)
-
-        # --- Single forward pass through encoder (Eq 26: combined gradient) ---
-        repr_nb = self.encoder.batch_forward(obs_nb_norm, adj_id, hist_nb_norm)  # (N, B, repr_dim)
-        with torch.no_grad():
-            repr_next_nb = self.encoder.batch_forward(next_nb_norm, adj_id, next_hist_nb_norm)
-
-        # --- Critic losses (Eq 25) ---
-        critic_loss_total = torch.tensor(0.0, device=self.device)
-        for b in range(B):
-            repr_b      = repr_nb[:, b, :]
-            repr_b_next = repr_next_nb[:, b, :]
-            rewards_b   = rewards_tensor[:, b]
-            values      = self.critics[b](repr_b)
-            # Use target critics for stable bootstrap – prevents moving-target instability.
-            next_values = self.target_critics[b](repr_b_next)
-            targets     = rewards_b + gamma * next_values * (1.0 - dones_tensor)
-            c_loss      = F.mse_loss(values, targets.detach())
-            critic_loss_total = critic_loss_total + c_loss
-            total_critic_loss += c_loss.item()
-
-        # --- Cost critic losses (Bellman update, one per constraint k=0,1,2) ---
-        # Each CostCritic produces a (batch, 3) output; MSE against Bellman targets.
-        cost_critic_loss_total = torch.tensor(0.0, device=self.device)
-        # cost_advantages[b] = (N, K) detached cost advantage for building b.
-        cost_advantages: Dict[int, torch.Tensor] = {}
-        if has_costs and costs_tensor is not None:
-            for b in range(B):
-                cv_b = self.cost_critics[b](repr_nb[:, b, :])          # (N, K), grad enabled
-                with torch.no_grad():
-                    cnv_b = self.cost_critics[b](repr_next_nb[:, b, :])
-                    cost_tgt_b = (
-                        costs_tensor[:, b, :]
-                        + gamma * cnv_b * (1.0 - dones_tensor.unsqueeze(-1))
-                    )  # (N, K) Bellman target – detached
-                cc_loss = F.mse_loss(cv_b, cost_tgt_b)
-                cost_critic_loss_total = cost_critic_loss_total + cc_loss
-                total_cost_critic_loss += cc_loss.item()
-                # Detached cost advantage for actor: A_c_k = target - value
-                cost_advantages[b] = (cost_tgt_b - cv_b.detach())   # (N, K)
-
-        # --- Actor losses (Eq 24 + SAC entropy) ---
-        # α = current SAC temperature (detached – only log_alpha gets its own update)
-        alpha = self.log_alpha.exp().detach()
-
-        # Use safe (post-CBF) actions for policy gradient – Eq 24 takes the
-        # expectation over the safe action space.  Fall back to raw actions
-        # if safe_actions are not stored (e.g. legacy batches).
-        if "safe_actions" in batch and batch["safe_actions"] is not None:
-            pg_actions_tensor = torch.tensor(
-                batch["safe_actions"], dtype=torch.float32
-            ).to(self.device)  # (N, B, action_dim)
-        else:
-            pg_actions_tensor = torch.tensor(
-                batch["raw_actions"], dtype=torch.float32
-            ).to(self.device)  # (N, B, action_dim)
-
-        actor_loss_total = torch.tensor(0.0, device=self.device)
-        # Accumulate alpha loss separately (needs only detached log_prob)
-        alpha_loss_total = torch.tensor(0.0, device=self.device)
-
-        for b in range(B):
-            repr_b    = repr_nb[:, b, :]
-            rewards_b = rewards_tensor[:, b]
-            with torch.no_grad():
-                v_b  = self.critics[b](repr_nb[:, b, :])
-                nv_b = self.target_critics[b](repr_next_nb[:, b, :])
-                # GAE-λ advantage (lower variance than 1-step TD on 8760-step episodes)
-                adv = self._compute_gae(
-                    rewards_b, v_b, nv_b, dones_tensor,
-                    gamma=gamma, lam=0.95,
-                )
-                adv = (adv - adv.mean()) / (adv.std() + 1e-8)
-
-            pg_a_b = pg_actions_tensor[:, b, :]  # safe actions in (-1, 1), (N, action_dim)
-
-            # True log π(a_safe | s) from the stochastic actor via atanh inversion
-            log_prob = self.actors[b].log_prob_of(repr_b, pg_a_b)  # (N,)
-
-            # Lagrangian penalty: Σ_k λ_k * A_c_k(s,a)
-            if b in cost_advantages:
-                lambdas_pos = torch.clamp(self._lambdas, min=0.0).detach()  # (K,)
-                lambda_penalty = (lambdas_pos * cost_advantages[b]).sum(dim=-1)  # (N,)
-            else:
-                lambda_penalty = torch.zeros(N, device=self.device)
-
-            effective_adv = (adv - lambda_penalty).detach()  # (N,)
-            # SAC entropy bonus: maximise entropy separately from advantage
-            # L = -E[A * log_π] + α * E[log_π]  (standard SAC formulation)
-            a_loss = -(effective_adv * log_prob).mean() + alpha * log_prob.mean()
-            actor_loss_total = actor_loss_total + a_loss
-            total_actor_loss += a_loss.item()
-
-            # Alpha (temperature) update: reuse log_prob already computed above (detached)
-            alpha_loss_b = -(self.log_alpha * (log_prob.detach() + self._target_entropy)).mean()
-            alpha_loss_total = alpha_loss_total + alpha_loss_b
-
-        # --- Neural filter safety gradient (online fine-tuning) ---
-        # When the neural filter is active, run a forward pass through it using the
-        # current batch and backpropagate its constraint penalty into the actor via
-        # the shared representation.  This is the key novel contribution: safety
-        # gradients flow end-to-end from the filter's differentiable constraint
-        # penalty into the policy network.
-        nf_loss_total = torch.tensor(0.0, device=self.device)
-        if self.use_neural_filter and "safe_actions" in batch and batch["safe_actions"] is not None:
-            # QP oracle labels for this batch (N, B, action_dim)
-            a_safe_qp = torch.tensor(
-                batch["safe_actions"], dtype=torch.float32
-            ).to(self.device)
-            # obs_nb: (N, B, obs_dim) – reuse the already-built tensor
-            for b in range(B):
-                obs_b = obs_nb[:, b, :]          # (N, obs_dim)
-                # Actor mean as nominal action — grad enabled so safety flows back
-                # forward() returns (mean, log_std); apply tanh to get bounded action
-                _mean_b, _ = self.actors[b](repr_nb[:, b, :])
-                a_nom_b = torch.tanh(_mean_b)                 # (N, action_dim)
-                a_safe_b = a_safe_qp[:, b, :]    # (N, action_dim) QP oracle labels
-                nf_loss_b = self.neural_filter.loss(obs_b, a_nom_b, a_safe_b, alpha=0.5)
-                nf_loss_total = nf_loss_total + nf_loss_b
-
-        # --- Single combined backward (avoids in-place tensor version conflicts) ---
-        # Apply separate grad norm clips: tight (0.5) for actor to contain REINFORCE
-        # variance, normal (1.0) for critics.
-        combined_loss = (
-            critic_loss_total
-            + cost_critic_loss_total
-            + actor_loss_total
-            + nf_loss_total
-        )
-        self.encoder_optimizer.zero_grad()
-        self.actor_optimizer.zero_grad()
-        self.critic_optimizer.zero_grad()
-        self.cost_critic_optimizer.zero_grad()
-        self.neural_filter_optimizer.zero_grad()
-        combined_loss.backward()
-        # Critics: generous clip — Bellman targets are bounded
-        nn.utils.clip_grad_norm_(
-            list(self.critics.parameters()) + list(self.cost_critics.parameters()),
-            max_norm=1.0,
-        )
-        # Actor + encoder: tight clip — REINFORCE has high variance on long episodes
-        nn.utils.clip_grad_norm_(
-            list(self.encoder.parameters()) + list(self.actors.parameters())
-            + list(self.neural_filter.parameters()),
-            max_norm=0.5,
-        )
-        self.encoder_optimizer.step()
-        self.actor_optimizer.step()
-        self.critic_optimizer.step()
-        self.cost_critic_optimizer.step()
-        self.neural_filter_optimizer.step()
-
-        # --- Alpha (SAC temperature) update – separate backward ---
-        # alpha_loss depends only on log_alpha (log_prob was detached above)
-        self.alpha_optimizer.zero_grad()
-        alpha_loss_total.backward()
-        self.alpha_optimizer.step()
-
-        # --- Lagrangian dual update: gradient ascent on λ · (J_c - d) ---
-        # Each λ_k increases when its constraint is violated beyond cost_limit,
-        # tightening the penalty on the policy in the next update.
-        if has_costs and costs_tensor is not None:
-            # Mean violation rate over all timesteps and buildings: (K,)
-            mean_costs = costs_tensor.mean(dim=0).mean(dim=0)
-            # Dual loss for gradient-descent optimizer → ascent on λ
-            lambda_loss = -(self._lambdas * (mean_costs - self._cost_limit)).sum()
-            self.lambda_optimizer.zero_grad()
-            lambda_loss.backward()
-            self.lambda_optimizer.step()
-            # Project λ to [0, lambda_max] (dual feasibility + anti-runaway cap)
-            with torch.no_grad():
-                self._lambdas.data.clamp_(min=0.0, max=self._lag_cfg.lambda_max)
-
-        # Polyak EMA update for target critics: θ_target ← τ·θ + (1-τ)·θ_target
-        with torch.no_grad():
-            for p, tp in zip(self.critics.parameters(), self.target_critics.parameters()):
-                tp.data.mul_(1.0 - self._target_tau).add_(self._target_tau * p.data)
-
+        if costs is not None:
+            self._update_lambdas(costs.mean(dim=(0, 1)))
         self._update_step += 1
-
-        return {
-            "actor_loss": total_actor_loss / B,
-            "critic_loss": total_critic_loss / B,
-            "cost_critic_loss": total_cost_critic_loss / B,
-            "neural_filter_loss": float(nf_loss_total.item()) / B,
-            "lambdas": self._lambdas.detach().cpu().tolist(),
-            "alpha": float(self.log_alpha.exp().item()),
-        }
+        k = max(n_updates, 1)
+        return {**{key: v / k for key, v in sums.items()},
+                "gradient_steps": n_updates, "stopped_early": stopped_early,
+                "reward_scale": scale,
+                "lambdas": self._lambdas.detach().cpu().tolist()}
 
     # ------------------------------------------------------------------
     def save(self, path: str) -> None:
-        """Save model weights to *path* (directory)."""
         os.makedirs(path, exist_ok=True)
         torch.save(self.encoder.state_dict(), os.path.join(path, "encoder.pt"))
         torch.save(self.actors.state_dict(), os.path.join(path, "actors.pt"))
         torch.save(self.critics.state_dict(), os.path.join(path, "critics.pt"))
-        torch.save(self.target_critics.state_dict(), os.path.join(path, "target_critics.pt"))
         torch.save(self.cost_critics.state_dict(), os.path.join(path, "cost_critics.pt"))
-        torch.save({"lambdas": self._lambdas.data}, os.path.join(path, "lambdas.pt"))
-        torch.save({"log_alpha": self.log_alpha.data}, os.path.join(path, "log_alpha.pt"))
+        torch.save({"lambdas": self._lambdas, "cost_integral": self._cost_integral,
+                    "prev_cost": self._prev_cost}, os.path.join(path, "lagrangian.pt"))
         torch.save(self.obs_normalizer.state_dict(), os.path.join(path, "obs_normalizer.pt"))
-        # Only save neural filter if it has actually been trained (use_neural_filter=True).
-        # Saving the randomly-initialised filter and loading it later would silently
-        # replace the real policy with a near-zero null controller.
-        if self.use_neural_filter:
-            torch.save(self.neural_filter.state_dict(), os.path.join(path, "neural_filter.pt"))
+        torch.save(self.return_normalizer.state_dict(), os.path.join(path, "return_normalizer.pt"))
 
     def load(self, path: str) -> None:
-        """Load model weights from *path* (directory)."""
         map_loc = self.device
-        def _load_checked(module: nn.Module, filename: str, label: str) -> None:
-            checkpoint_path = os.path.join(path, filename)
+
+        def _load(module: nn.Module, fname: str, label: str) -> None:
             try:
-                module.load_state_dict(torch.load(checkpoint_path, map_location=map_loc))
-            except RuntimeError as exc:
+                module.load_state_dict(torch.load(os.path.join(path, fname), map_location=map_loc))
+            except RuntimeError:
                 raise RuntimeError(
-                    f"Checkpoint {path!r} is incompatible with the current STEMSAgent "
-                    f"(buildings={self.B}, obs_dim={self.obs_dim}, action_dim={self.action_dim}). "
-                    "This usually means the checkpoint was trained with an older mock/3-building setup "
-                    "or a previous network definition. Re-run training with the current schema, or pass a "
-                    "checkpoint directory that matches this environment. "
-                    f"Failed while loading {label} from {filename}."
+                    f"Checkpoint {path!r} is incompatible with this agent "
+                    f"(B={self.B}, obs_dim={self.obs_dim}, action_dim={self.action_dim}); "
+                    f"failed loading {label}. Retrain with the current schema/config."
                 ) from None
 
-        _load_checked(self.encoder, "encoder.pt", "encoder")
-        _load_checked(self.actors, "actors.pt", "actors")
-        _load_checked(self.critics, "critics.pt", "critics")
-        target_critics_path = os.path.join(path, "target_critics.pt")
-        if os.path.exists(target_critics_path):
-            _load_checked(self.target_critics, "target_critics.pt", "target critics")
-        else:
-            # Fallback: initialise target from live critics if no saved target exists
-            self.target_critics.load_state_dict(self.critics.state_dict())
-        cost_critics_path = os.path.join(path, "cost_critics.pt")
-        if os.path.exists(cost_critics_path):
-            _load_checked(self.cost_critics, "cost_critics.pt", "cost critics")
-        lambdas_path = os.path.join(path, "lambdas.pt")
-        if os.path.exists(lambdas_path):
-            d = torch.load(lambdas_path, map_location=map_loc)
+        _load(self.encoder, "encoder.pt", "encoder")
+        _load(self.actors, "actors.pt", "actors")
+        _load(self.critics, "critics.pt", "critics")
+        if os.path.exists(os.path.join(path, "cost_critics.pt")):
+            _load(self.cost_critics, "cost_critics.pt", "cost critics")
+        lag_path = os.path.join(path, "lagrangian.pt")
+        if os.path.exists(lag_path):
+            d = torch.load(lag_path, map_location=map_loc)
             with torch.no_grad():
-                self._lambdas.data.copy_(d["lambdas"])
-        log_alpha_path = os.path.join(path, "log_alpha.pt")
-        if os.path.exists(log_alpha_path):
-            d = torch.load(log_alpha_path, map_location=map_loc)
-            with torch.no_grad():
-                self.log_alpha.data.copy_(d["log_alpha"])
-        obs_norm_path = os.path.join(path, "obs_normalizer.pt")
-        if os.path.exists(obs_norm_path):
+                self._lambdas = d["lambdas"].to(self.device)
+                self._cost_integral = d["cost_integral"].to(self.device)
+                self._prev_cost = d["prev_cost"].to(self.device)
+        if os.path.exists(os.path.join(path, "obs_normalizer.pt")):
             self.obs_normalizer.load_state_dict(
-                torch.load(obs_norm_path, map_location=map_loc)
-            )
-        nf_path = os.path.join(path, "neural_filter.pt")
-        if os.path.exists(nf_path):
-            _load_checked(self.neural_filter, "neural_filter.pt", "neural safety filter")
-            # Do NOT auto-enable use_neural_filter here.  The file is saved
-            # unconditionally so its mere existence does not mean it was trained.
-            # Callers must explicitly set agent.use_neural_filter = True after
-            # verifying the filter is trained.
+                torch.load(os.path.join(path, "obs_normalizer.pt"), map_location=map_loc))
+        if os.path.exists(os.path.join(path, "return_normalizer.pt")):
+            self.return_normalizer.load_state_dict(
+                torch.load(os.path.join(path, "return_normalizer.pt"), map_location=map_loc))

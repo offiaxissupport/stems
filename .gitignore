@@ -2,3 +2,32 @@ __pycache__/
 *.pyc
 checkpoints/
 plots/
+
+# Run artifacts (stale logs were removed; never commit these)
+*_out.txt
+*_log.txt
+*_console.txt
+ablation_results.txt
+checkpoints_smoke/
+checkpoints_ablation/
+
+# Local environments and caches
+.venv/
+.pytest_cache/
+
+# Trained model checkpoints written next to run records (100+ MB)
+results/**/*_model/
+# Scratch result directories from debugging sessions
+results/smoke_*/
+results/check_*/
+results/pilot_v1/
+
+# LaTeX build products
+stems_*.aux
+stems_*.fdb_latexmk
+stems_*.fls
+stems_*.log
+stems_*.nav
+stems_*.out
+stems_*.snm
+stems_*.toc

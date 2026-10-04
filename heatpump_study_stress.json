@@ -1,0 +1,193 @@
+{
+  "meta": {
+    "env_type": "CityLearn",
+    "isolate": "thermal",
+    "steps": 1500,
+    "seeds": [
+      0
+    ],
+    "policy": "reactive",
+    "stress": true,
+    "temp_offset": -18.0,
+    "temp_gradient": -4.0,
+    "p_building_max": 2.0,
+    "citylearn_patches": [
+      "dhw_storage_capacity"
+    ],
+    "eval_horizon": 2,
+    "eval_margin": 0.05
+  },
+  "dhw_calibration": {
+    "capacity_kwh": [
+      6.757101058959961,
+      7.282660484313965,
+      7.589635372161865,
+      10.1600980758667,
+      6.560161113739014,
+      11.174981117248535,
+      10.989421844482422,
+      11.200160026550293
+    ],
+    "heater_kw": [
+      5.863419055938721,
+      5.729498863220215,
+      4.064034938812256,
+      6.757967472076416,
+      4.1513214111328125,
+      6.921514511108398,
+      7.370760917663574,
+      6.406222820281982
+    ],
+    "action_bound": [
+      0.8677417635917664,
+      0.7867315411567688,
+      0.5354716777801514,
+      0.6651478409767151,
+      0.6328078508377075,
+      0.6193759441375732,
+      0.6707141995429993,
+      0.5719760060310364
+    ],
+    "charge_rate_soc_per_h": [
+      0.8542166948318481,
+      0.7218723893165588,
+      0.5218313932418823,
+      0.6196674108505249,
+      0.6017398238182068,
+      0.589836835861206,
+      0.630997359752655,
+      0.5626432299613953
+    ],
+    "time_to_heat_h": [
+      1.1706631183624268,
+      1.3852864503860474,
+      1.9163278341293335,
+      1.6137689352035522,
+      1.6618478298187256,
+      1.69538414478302,
+      1.5847927331924438,
+      1.7773252725601196
+    ]
+  },
+  "results": {
+    "no pre-heat (reactive)": {
+      "dhw_readiness_rate": 0.8950833082199097,
+      "dhw_demand_covered_rate": 0.938736617565155,
+      "dhw_deficit_kwh": 1163.482177734375,
+      "dhw_soc_mean": 0.2813272178173065,
+      "cost": 3021.58642578125,
+      "emission": 1865.3358154296875,
+      "avg_daily_peak": 18.722362595219767,
+      "electricity_consumption": 10597.333984375,
+      "ramping_rate": 4.855961799621582,
+      "hvac_electricity_kwh": 170.30672675186406,
+      "dhw_electricity_kwh": 196.18280654400587,
+      "dhw_price_per_kwh": 0.21995722670742582,
+      "discomfort_rate": 0.0,
+      "safety_violation_rate": 0.24016666666666667,
+      "readiness_std": 0.0
+    },
+    "+ CoP-aware power guard": {
+      "dhw_readiness_rate": 0.8950833082199097,
+      "dhw_demand_covered_rate": 0.938736617565155,
+      "dhw_deficit_kwh": 1163.482177734375,
+      "dhw_soc_mean": 0.2813272178173065,
+      "cost": 3008.19677734375,
+      "emission": 1856.42041015625,
+      "avg_daily_peak": 18.68270949394472,
+      "electricity_consumption": 10544.78125,
+      "ramping_rate": 4.848693370819092,
+      "hvac_electricity_kwh": 109.104054073302,
+      "dhw_electricity_kwh": 196.18280654400587,
+      "dhw_price_per_kwh": 0.21995722670742582,
+      "discomfort_rate": 0.0,
+      "safety_violation_rate": 0.23883333333333334,
+      "readiness_std": 0.0
+    },
+    "pre-heat L=1": {
+      "dhw_readiness_rate": 0.9185000061988831,
+      "dhw_demand_covered_rate": 0.9513706564903259,
+      "dhw_deficit_kwh": 734.6912231445312,
+      "dhw_soc_mean": 0.2950538992881775,
+      "cost": 3013.05810546875,
+      "emission": 1859.074462890625,
+      "avg_daily_peak": 18.680943689038678,
+      "electricity_consumption": 10558.466796875,
+      "ramping_rate": 4.8558030128479,
+      "hvac_electricity_kwh": 108.9904993245118,
+      "dhw_electricity_kwh": 205.7334123417968,
+      "dhw_price_per_kwh": 0.23068754985960255,
+      "discomfort_rate": 0.0,
+      "safety_violation_rate": 0.239,
+      "readiness_std": 0.0
+    },
+    "pre-heat L=2": {
+      "dhw_readiness_rate": 0.9611666798591614,
+      "dhw_demand_covered_rate": 0.961144208908081,
+      "dhw_deficit_kwh": 103.15931701660156,
+      "dhw_soc_mean": 0.3267873525619507,
+      "cost": 3021.421142578125,
+      "emission": 1864.13232421875,
+      "avg_daily_peak": 18.75447493214761,
+      "electricity_consumption": 10581.451171875,
+      "ramping_rate": 4.869435787200928,
+      "hvac_electricity_kwh": 108.87071578914492,
+      "dhw_electricity_kwh": 227.10361286764964,
+      "dhw_price_per_kwh": 0.2458992002283973,
+      "discomfort_rate": 0.0,
+      "safety_violation_rate": 0.23925,
+      "readiness_std": 0.0
+    },
+    "pre-heat L=3": {
+      "dhw_readiness_rate": 0.9909166693687439,
+      "dhw_demand_covered_rate": 0.9730631709098816,
+      "dhw_deficit_kwh": 33.21009826660156,
+      "dhw_soc_mean": 0.3648306429386139,
+      "cost": 3028.9189453125,
+      "emission": 1870.6954345703125,
+      "avg_daily_peak": 18.859841915868945,
+      "electricity_consumption": 10610.826171875,
+      "ramping_rate": 4.884494781494141,
+      "hvac_electricity_kwh": 108.82361098679121,
+      "dhw_electricity_kwh": 255.85574792075204,
+      "dhw_price_per_kwh": 0.31270679554157177,
+      "discomfort_rate": 0.0,
+      "safety_violation_rate": 0.23991666666666667,
+      "readiness_std": 0.0
+    },
+    "+ weather anticipation (L=2)": {
+      "dhw_readiness_rate": 0.9859166741371155,
+      "dhw_demand_covered_rate": 0.9690107107162476,
+      "dhw_deficit_kwh": 60.19928741455078,
+      "dhw_soc_mean": 0.34057724475860596,
+      "cost": 3024.886474609375,
+      "emission": 1865.6348876953125,
+      "avg_daily_peak": 18.78339704390495,
+      "electricity_consumption": 10589.1640625,
+      "ramping_rate": 4.874474048614502,
+      "hvac_electricity_kwh": 108.86619762382634,
+      "dhw_electricity_kwh": 237.55280137003865,
+      "dhw_price_per_kwh": 0.2550321473446669,
+      "discomfort_rate": 0.0,
+      "safety_violation_rate": 0.23916666666666667,
+      "readiness_std": 0.0
+    },
+    "FULL (L=2, weather + CoP)": {
+      "dhw_readiness_rate": 0.9910833239555359,
+      "dhw_demand_covered_rate": 0.9735399484634399,
+      "dhw_deficit_kwh": 43.51982498168945,
+      "dhw_soc_mean": 0.356295645236969,
+      "cost": 3028.29736328125,
+      "emission": 1867.5313720703125,
+      "avg_daily_peak": 18.795808576768444,
+      "electricity_consumption": 10599.5185546875,
+      "ramping_rate": 4.8808979988098145,
+      "hvac_electricity_kwh": 108.70284218970937,
+      "dhw_electricity_kwh": 249.9854551505996,
+      "dhw_price_per_kwh": 0.2591495094175773,
+      "discomfort_rate": 0.0,
+      "safety_violation_rate": 0.23925,
+      "readiness_std": 0.0
+    }
+  }
+}

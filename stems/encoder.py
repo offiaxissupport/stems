@@ -6,35 +6,24 @@ Architecture:
     TemporalTransformer – multi-head self-attention over T=24-step window (Eq 13-14)
     STEncoder           – fuses spatial + temporal into 64-dim representation (Eq 15)
 
-torch_geometric is used when available; otherwise FallbackGCNConv provides an
-equivalent manual implementation with symmetric normalisation.
+The GCN is a self-contained PyTorch implementation (``GCNConv``) with symmetric
+normalisation, so the package has no torch_geometric dependency.
 """
 
 from __future__ import annotations
 
 import math
-from typing import Optional
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# --------------------------------------------------------------------------
-# Optional torch_geometric import
-# --------------------------------------------------------------------------
-_PYGEOM_AVAILABLE = False
-try:
-    from torch_geometric.nn import GCNConv  # type: ignore
-    _PYGEOM_AVAILABLE = True
-except ImportError:
-    pass
-
 
 # --------------------------------------------------------------------------
-# FallbackGCNConv – pure PyTorch GCN layer (symmetric normalisation)
+# GCNConv – pure PyTorch GCN layer (symmetric normalisation, Kipf & Welling)
 # --------------------------------------------------------------------------
 
-class FallbackGCNConv(nn.Module):
+class GCNConv(nn.Module):
     r"""Manual GCN convolution following Kipf & Welling (2017).
 
     Computes:  H' = D̂^{-1/2} Â D̂^{-1/2} H W
@@ -93,7 +82,7 @@ class SpatialGCN(nn.Module):
 
         self.convs = nn.ModuleList()
         for i in range(num_layers):
-            self.convs.append(FallbackGCNConv(dims[i], dims[i + 1]))
+            self.convs.append(GCNConv(dims[i], dims[i + 1]))
 
         self.out_dim = hidden_dim
 

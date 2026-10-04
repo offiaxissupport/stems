@@ -1,0 +1,1322 @@
+{
+  "meta": {
+    "scenario": {
+      "schema": "citylearn_schemas/tx_travis_8b/schema.json",
+      "season": "winter",
+      "subset_seed": null,
+      "n_buildings": 8,
+      "days": 28,
+      "grid_cap_kw": 300.0,
+      "building_cap_kw": 80.0,
+      "hvac_control": "setpoint",
+      "key": "tx_travis_8b__winter28d__refn8__cap300-80",
+      "buildings": [
+        "resstock-amy2018-2021-release-1-134795",
+        "resstock-amy2018-2021-release-1-15942",
+        "resstock-amy2018-2021-release-1-344233",
+        "resstock-amy2018-2021-release-1-400973",
+        "resstock-amy2018-2021-release-1-412815",
+        "resstock-amy2018-2021-release-1-427553",
+        "resstock-amy2018-2021-release-1-494842",
+        "resstock-amy2018-2021-release-1-519975"
+      ],
+      "train_window": [
+        0,
+        671
+      ],
+      "eval_window": [
+        672,
+        1343
+      ]
+    },
+    "arm": {
+      "name": "rl",
+      "policy": "rl",
+      "barrier": "none"
+    },
+    "seed": 0,
+    "episodes": 60,
+    "learner": {
+      "share_parameters": true
+    },
+    "code": {
+      "git": "5378df8-dirty",
+      "fingerprint": "9708d688ffd6a033",
+      "files": 23,
+      "citylearn": "2.6.0b1"
+    },
+    "started": "2026-10-03 12:16:41",
+    "train_calibration": {
+      "soc_rate": [
+        0.2666666805744171,
+        0.24393939971923828,
+        0.5,
+        0.5154639482498169,
+        0.24444444477558136,
+        0.5333333611488342,
+        0.17777778208255768,
+        0.20749999582767487
+      ],
+      "dhw_capacity_kwh": [
+        6.757101058959961,
+        7.282660484313965,
+        7.589635372161865,
+        10.1600980758667,
+        6.560161113739014,
+        11.174981117248535,
+        10.989421844482422,
+        11.200160026550293
+      ]
+    },
+    "eval_calibration": {
+      "soc_rate": [
+        0.2666666805744171,
+        0.24393939971923828,
+        0.5,
+        0.5154639482498169,
+        0.24444444477558136,
+        0.5333333611488342,
+        0.17777778208255768,
+        0.20749999582767487
+      ],
+      "dhw_capacity_kwh": [
+        6.757101058959961,
+        7.282660484313965,
+        7.589635372161865,
+        10.1600980758667,
+        6.560161113739014,
+        11.174981117248535,
+        10.989421844482422,
+        11.200160026550293
+      ]
+    },
+    "citylearn_patches": [
+      "dhw_storage_capacity",
+      "t0_thermal_double_count",
+      "endogenous_obs_from_simulated_hour"
+    ],
+    "buildings_simulated": [
+      "resstock-amy2018-2021-release-1-134795",
+      "resstock-amy2018-2021-release-1-15942",
+      "resstock-amy2018-2021-release-1-344233",
+      "resstock-amy2018-2021-release-1-400973",
+      "resstock-amy2018-2021-release-1-412815",
+      "resstock-amy2018-2021-release-1-427553",
+      "resstock-amy2018-2021-release-1-494842",
+      "resstock-amy2018-2021-release-1-519975"
+    ],
+    "config": {
+      "cbf": {
+        "SOC_min": 0.1,
+        "SOC_max": 0.9,
+        "P_grid_max": 300.0,
+        "P_building_max": 80.0,
+        "gamma_cbf": 1.0
+      },
+      "safety": {
+        "feasibility_qp": true,
+        "anticipatory": false,
+        "invariance_horizon": 1,
+        "robust_margins": false,
+        "soc_margin": 0.03,
+        "soc_tolerance": 0.001,
+        "power_derate": 0.05
+      },
+      "thermal": {
+        "dhw_readiness": true,
+        "preheat_horizon": 2,
+        "dhw_margin": 0.05,
+        "dhw_soc_cap": 0.95,
+        "forecast_alpha": 0.2,
+        "forecast_warmup": 24,
+        "forecast_temp_gain": 0.02,
+        "weather_anticipation": true,
+        "weather_gain": 0.15,
+        "weather_horizon": 3,
+        "cop_aware_power": true
+      },
+      "training": {
+        "episodes": 50,
+        "batch_size": 512,
+        "buffer_capacity": 100000,
+        "exploration_noise": 0.1,
+        "action_scale": 1.0,
+        "update_epochs": 10,
+        "minibatch_size": 64,
+        "ppo_clip": 0.2,
+        "gae_lambda": 0.95,
+        "value_coef": 0.5,
+        "max_grad_norm": 0.5,
+        "target_kl": 0.02,
+        "entropy_coef": 0.01,
+        "scale_rewards": true,
+        "actor_target": "raw"
+      },
+      "lagrangian": {
+        "num_constraints": 3,
+        "cost_limit": 0.05,
+        "lambda_init": 0.1,
+        "lambda_max": 10.0,
+        "lambda_lr": 0.005,
+        "use_pid": true,
+        "pid_kp": 1.0,
+        "pid_ki": 0.3,
+        "pid_kd": 0.0
+      },
+      "reward": {
+        "mu": 1.0,
+        "alpha_grid": 0.5,
+        "alpha_build": 0.3,
+        "beta_ramp": 0.2,
+        "lambda_indoor": 0.4,
+        "xi": 0.0,
+        "T_ref": 22.0,
+        "T_comfort_threshold": 2.0,
+        "ev_service": 25.0,
+        "ev_shaping": 0.5
+      },
+      "actor_critic": {
+        "hidden_dim": 128,
+        "lr": 0.0003,
+        "gamma": 0.99,
+        "share_parameters": true
+      }
+    }
+  },
+  "train": [
+    {
+      "episode": 1,
+      "steps": 671,
+      "reward": -1049.6972302934835,
+      "violating_step_rate": 0.9672131147540983,
+      "gradient_steps": 0,
+      "lambdas": [
+        0.10000000149011612,
+        0.10000000149011612,
+        0.10000000149011612
+      ],
+      "entropy": 0.0,
+      "approx_kl": 0.0,
+      "clip_frac": 0.0,
+      "value_loss": 0.0,
+      "reward_scale": 1.0,
+      "seconds": 44.1
+    },
+    {
+      "episode": 2,
+      "steps": 671,
+      "reward": -836.1406902996508,
+      "violating_step_rate": 0.9731743666169895,
+      "gradient_steps": 110,
+      "lambdas": [
+        0.5019150376319885,
+        0.03500000014901161,
+        0.03500000014901161
+      ],
+      "entropy": 4.105921602249145,
+      "approx_kl": 0.007236698046736737,
+      "clip_frac": 0.07323817793618549,
+      "value_loss": 0.046149942363527686,
+      "reward_scale": 56.79668045043945,
+      "seconds": 80.7
+    },
+    {
+      "episode": 3,
+      "steps": 671,
+      "reward": -890.8195295920017,
+      "violating_step_rate": 0.9612518628912071,
+      "gradient_steps": 110,
+      "lambdas": [
+        0.5459873080253601,
+        0.019999999552965164,
+        0.019999999552965164
+      ],
+      "entropy": 4.074757133830677,
+      "approx_kl": 0.0048208979219039475,
+      "clip_frac": 0.04621574861759489,
+      "value_loss": 0.05819617865437811,
+      "reward_scale": 59.93709945678711,
+      "seconds": 78.6
+    },
+    {
+      "episode": 4,
+      "steps": 671,
+      "reward": -868.482931393397,
+      "violating_step_rate": 0.9672131147540983,
+      "gradient_steps": 110,
+      "lambdas": [
+        0.668189287185669,
+        0.004999998956918716,
+        0.004999998956918716
+      ],
+      "entropy": 4.116955210945823,
+      "approx_kl": 0.005090617244555192,
+      "clip_frac": 0.05331401195038449,
+      "value_loss": 0.048716405999254093,
+      "reward_scale": 60.830345153808594,
+      "seconds": 82.9
+    },
+    {
+      "episode": 5,
+      "steps": 671,
+      "reward": -818.2315635238485,
+      "violating_step_rate": 0.9314456035767511,
+      "gradient_steps": 110,
+      "lambdas": [
+        0.671184778213501,
+        0.0,
+        0.0
+      ],
+      "entropy": 4.014656426689841,
+      "approx_kl": 0.007786070866198067,
+      "clip_frac": 0.08482633774930781,
+      "value_loss": 0.03637578414583748,
+      "reward_scale": 59.700523376464844,
+      "seconds": 75.7
+    },
+    {
+      "episode": 6,
+      "steps": 671,
+      "reward": -880.957904275753,
+      "violating_step_rate": 0.9493293591654247,
+      "gradient_steps": 110,
+      "lambdas": [
+        0.7263039946556091,
+        0.0,
+        0.0
+      ],
+      "entropy": 4.008497938242826,
+      "approx_kl": 0.006495485489590051,
+      "clip_frac": 0.06611814952709458,
+      "value_loss": 0.056631741503422914,
+      "reward_scale": 60.819679260253906,
+      "seconds": 75.8
+    },
+    {
+      "episode": 7,
+      "steps": 671,
+      "reward": -819.9033102104886,
+      "violating_step_rate": 0.9314456035767511,
+      "gradient_steps": 64,
+      "lambdas": [
+        0.7776042819023132,
+        0.0,
+        0.0
+      ],
+      "entropy": 3.9879207350313663,
+      "approx_kl": 0.008560573081695111,
+      "clip_frac": 0.08958385820733383,
+      "value_loss": 0.045491255179513246,
+      "reward_scale": 60.74284744262695,
+      "seconds": 64.4
+    },
+    {
+      "episode": 8,
+      "steps": 671,
+      "reward": -801.9924232769653,
+      "violating_step_rate": 0.9388971684053651,
+      "gradient_steps": 110,
+      "lambdas": [
+        0.8797615170478821,
+        0.0,
+        0.0
+      ],
+      "entropy": 3.8764973987232554,
+      "approx_kl": 0.010915366490106946,
+      "clip_frac": 0.1367176041007042,
+      "value_loss": 0.04254394304007292,
+      "reward_scale": 60.04833984375,
+      "seconds": 77.3
+    },
+    {
+      "episode": 9,
+      "steps": 671,
+      "reward": -815.6761975371941,
+      "violating_step_rate": 0.8703427719821163,
+      "gradient_steps": 110,
+      "lambdas": [
+        0.869772732257843,
+        0.0,
+        0.0
+      ],
+      "entropy": 3.8628904082558373,
+      "approx_kl": 0.013932521449433724,
+      "clip_frac": 0.16649159132079644,
+      "value_loss": 0.037051989409056574,
+      "reward_scale": 60.01868438720703,
+      "seconds": 69.1
+    },
+    {
+      "episode": 10,
+      "steps": 671,
+      "reward": -855.6141779832375,
+      "violating_step_rate": 0.7928464977645305,
+      "gradient_steps": 110,
+      "lambdas": [
+        0.8497429490089417,
+        0.0,
+        0.0
+      ],
+      "entropy": 3.8731297731399534,
+      "approx_kl": 0.012992805378400423,
+      "clip_frac": 0.15818365057083694,
+      "value_loss": 0.05337604644962333,
+      "reward_scale": 60.754459381103516,
+      "seconds": 71.9
+    },
+    {
+      "episode": 11,
+      "steps": 671,
+      "reward": -826.3552682109989,
+      "violating_step_rate": 0.7377049180327869,
+      "gradient_steps": 33,
+      "lambdas": [
+        0.8561289310455322,
+        0.0,
+        0.0
+      ],
+      "entropy": 3.8038049105441933,
+      "approx_kl": 0.012906184234783392,
+      "clip_frac": 0.16141633012078024,
+      "value_loss": 0.03488489675025145,
+      "reward_scale": 60.49409484863281,
+      "seconds": 57.9
+    },
+    {
+      "episode": 12,
+      "steps": 671,
+      "reward": -846.4764098676167,
+      "violating_step_rate": 0.6453055141579732,
+      "gradient_steps": 9,
+      "lambdas": [
+        0.8529210090637207,
+        0.0,
+        0.0
+      ],
+      "entropy": 3.7143513096703424,
+      "approx_kl": 0.01187977983823253,
+      "clip_frac": 0.1423611111111111,
+      "value_loss": 0.04809052414364285,
+      "reward_scale": 60.71018600463867,
+      "seconds": 51.8
+    },
+    {
+      "episode": 13,
+      "steps": 671,
+      "reward": -762.3970694424692,
+      "violating_step_rate": 0.6602086438152012,
+      "gradient_steps": 9,
+      "lambdas": [
+        0.8794634938240051,
+        0.0,
+        0.0
+      ],
+      "entropy": 3.6076573530832925,
+      "approx_kl": 0.012239611798173023,
+      "clip_frac": 0.12586805555555555,
+      "value_loss": 0.030424423101875517,
+      "reward_scale": 60.21259689331055,
+      "seconds": 48.2
+    },
+    {
+      "episode": 14,
+      "steps": 671,
+      "reward": -767.7315378924844,
+      "violating_step_rate": 0.5797317436661699,
+      "gradient_steps": 10,
+      "lambdas": [
+        0.8656557202339172,
+        0.0,
+        0.0
+      ],
+      "entropy": 3.455941843986511,
+      "approx_kl": 0.009216431411914527,
+      "clip_frac": 0.0923828125,
+      "value_loss": 0.030750124156475066,
+      "reward_scale": 59.56034851074219,
+      "seconds": 56.7
+    },
+    {
+      "episode": 15,
+      "steps": 671,
+      "reward": -766.4581343613686,
+      "violating_step_rate": 0.46348733233979134,
+      "gradient_steps": 23,
+      "lambdas": [
+        0.8450484275817871,
+        0.0,
+        0.0
+      ],
+      "entropy": 3.42806367252184,
+      "approx_kl": 0.010628984269240627,
+      "clip_frac": 0.09724535371946252,
+      "value_loss": 0.030882311822927517,
+      "reward_scale": 59.14647674560547,
+      "seconds": 68.7
+    },
+    {
+      "episode": 16,
+      "steps": 671,
+      "reward": -820.5734147876223,
+      "violating_step_rate": 0.4202682563338301,
+      "gradient_steps": 17,
+      "lambdas": [
+        0.8432190418243408,
+        0.0,
+        0.0
+      ],
+      "entropy": 3.4101679184857536,
+      "approx_kl": 0.009171014230506605,
+      "clip_frac": 0.09884220821892514,
+      "value_loss": 0.050978574682684505,
+      "reward_scale": 59.057464599609375,
+      "seconds": 78.0
+    },
+    {
+      "episode": 17,
+      "steps": 671,
+      "reward": -752.1921985234258,
+      "violating_step_rate": 0.323397913561848,
+      "gradient_steps": 29,
+      "lambdas": [
+        0.8281072974205017,
+        0.0,
+        0.0
+      ],
+      "entropy": 3.1643843733031174,
+      "approx_kl": 0.012586151217592174,
+      "clip_frac": 0.13196303143069663,
+      "value_loss": 0.026263247404632897,
+      "reward_scale": 58.55390930175781,
+      "seconds": 66.6
+    },
+    {
+      "episode": 18,
+      "steps": 671,
+      "reward": -738.638161499198,
+      "violating_step_rate": 0.17883755588673622,
+      "gradient_steps": 4,
+      "lambdas": [
+        0.7949067950248718,
+        0.0,
+        0.0
+      ],
+      "entropy": 3.0940600633621216,
+      "approx_kl": 0.0159224902454298,
+      "clip_frac": 0.181640625,
+      "value_loss": 0.03437584592029452,
+      "reward_scale": 58.02049255371094,
+      "seconds": 60.7
+    },
+    {
+      "episode": 19,
+      "steps": 671,
+      "reward": -771.5258850554959,
+      "violating_step_rate": 0.3263785394932936,
+      "gradient_steps": 6,
+      "lambdas": [
+        0.8179843425750732,
+        0.0,
+        0.0
+      ],
+      "entropy": 3.1718883911768594,
+      "approx_kl": 0.006544597272295505,
+      "clip_frac": 0.07389322916666667,
+      "value_loss": 0.03025565141191085,
+      "reward_scale": 57.61579895019531,
+      "seconds": 68.0
+    },
+    {
+      "episode": 20,
+      "steps": 671,
+      "reward": -781.7476978049699,
+      "violating_step_rate": 0.13114754098360656,
+      "gradient_steps": 8,
+      "lambdas": [
+        0.778170645236969,
+        0.0,
+        0.0
+      ],
+      "entropy": 3.2030365467071533,
+      "approx_kl": 0.010600989786325954,
+      "clip_frac": 0.130859375,
+      "value_loss": 0.03215254284441471,
+      "reward_scale": 57.22993850708008,
+      "seconds": 75.6
+    },
+    {
+      "episode": 21,
+      "steps": 671,
+      "reward": -815.9773674016976,
+      "violating_step_rate": 0.2906110283159464,
+      "gradient_steps": 25,
+      "lambdas": [
+        0.8012295365333557,
+        0.0,
+        0.0
+      ],
+      "entropy": 3.1664786243438723,
+      "approx_kl": 0.014771026750095189,
+      "clip_frac": 0.15240927368402482,
+      "value_loss": 0.044646690636873244,
+      "reward_scale": 57.37407302856445,
+      "seconds": 60.4
+    },
+    {
+      "episode": 22,
+      "steps": 671,
+      "reward": -780.963277619142,
+      "violating_step_rate": 0.19225037257824143,
+      "gradient_steps": 28,
+      "lambdas": [
+        0.7800074815750122,
+        0.0,
+        0.0
+      ],
+      "entropy": 3.2393520133835927,
+      "approx_kl": 0.013020914709029188,
+      "clip_frac": 0.15153819801551954,
+      "value_loss": 0.03757554665207863,
+      "reward_scale": 57.208194732666016,
+      "seconds": 82.1
+    },
+    {
+      "episode": 23,
+      "steps": 671,
+      "reward": -763.7332536666981,
+      "violating_step_rate": 0.14157973174366617,
+      "gradient_steps": 52,
+      "lambdas": [
+        0.7616356611251831,
+        0.0,
+        0.0
+      ],
+      "entropy": 3.2374119483507595,
+      "approx_kl": 0.012411356736825278,
+      "clip_frac": 0.1432808618992567,
+      "value_loss": 0.03209332480596808,
+      "reward_scale": 57.09246063232422,
+      "seconds": 94.2
+    },
+    {
+      "episode": 24,
+      "steps": 671,
+      "reward": -789.3307022835743,
+      "violating_step_rate": 0.15499254843517138,
+      "gradient_steps": 24,
+      "lambdas": [
+        0.7548137307167053,
+        0.0,
+        0.0
+      ],
+      "entropy": 3.2546684245268502,
+      "approx_kl": 0.009473182872170582,
+      "clip_frac": 0.10054393454144399,
+      "value_loss": 0.03335545173225304,
+      "reward_scale": 56.92143630981445,
+      "seconds": 67.9
+    },
+    {
+      "episode": 25,
+      "steps": 671,
+      "reward": -724.9071159346034,
+      "violating_step_rate": 0.12518628912071536,
+      "gradient_steps": 28,
+      "lambdas": [
+        0.7412854433059692,
+        0.0,
+        0.0
+      ],
+      "entropy": 3.2833843316350664,
+      "approx_kl": 0.01159815597618165,
+      "clip_frac": 0.11836882534303836,
+      "value_loss": 0.02362959925085306,
+      "reward_scale": 56.47272491455078,
+      "seconds": 70.8
+    },
+    {
+      "episode": 26,
+      "steps": 671,
+      "reward": -771.6244686155625,
+      "violating_step_rate": 0.15648286140089418,
+      "gradient_steps": 31,
+      "lambdas": [
+        0.7368107438087463,
+        0.0,
+        0.0
+      ],
+      "entropy": 3.211427519398351,
+      "approx_kl": 0.014105574856887782,
+      "clip_frac": 0.15727025859298244,
+      "value_loss": 0.03598972890646227,
+      "reward_scale": 56.315338134765625,
+      "seconds": 71.6
+    },
+    {
+      "episode": 27,
+      "steps": 671,
+      "reward": -736.3107303505227,
+      "violating_step_rate": 0.08792846497764531,
+      "gradient_steps": 110,
+      "lambdas": [
+        0.715402364730835,
+        0.0,
+        0.0
+      ],
+      "entropy": 3.229921486160972,
+      "approx_kl": 0.015138960551518142,
+      "clip_frac": 0.16811881370165133,
+      "value_loss": 0.026826362447305158,
+      "reward_scale": 56.15208435058594,
+      "seconds": 125.3
+    },
+    {
+      "episode": 28,
+      "steps": 671,
+      "reward": -676.5644830832777,
+      "violating_step_rate": 0.07451564828614009,
+      "gradient_steps": 65,
+      "lambdas": [
+        0.7019299268722534,
+        0.0,
+        0.0
+      ],
+      "entropy": 3.238653487425584,
+      "approx_kl": 0.014465616479999601,
+      "clip_frac": 0.1559378873843413,
+      "value_loss": 0.020540936864339387,
+      "reward_scale": 55.78038024902344,
+      "seconds": 80.3
+    },
+    {
+      "episode": 29,
+      "steps": 671,
+      "reward": -690.3762462913963,
+      "violating_step_rate": 0.06706408345752608,
+      "gradient_steps": 102,
+      "lambdas": [
+        0.6882525682449341,
+        0.0,
+        0.0
+      ],
+      "entropy": 3.1540549993515015,
+      "approx_kl": 0.014247409222127102,
+      "clip_frac": 0.15771762296265246,
+      "value_loss": 0.01797031025018762,
+      "reward_scale": 55.462223052978516,
+      "seconds": 96.1
+    },
+    {
+      "episode": 30,
+      "steps": 671,
+      "reward": -712.9719017025838,
+      "violating_step_rate": 0.04769001490312966,
+      "gradient_steps": 98,
+      "lambdas": [
+        0.6724887490272522,
+        0.0,
+        0.0
+      ],
+      "entropy": 3.1914288948993295,
+      "approx_kl": 0.014720671687854871,
+      "clip_frac": 0.16186443035851936,
+      "value_loss": 0.02702483196495747,
+      "reward_scale": 55.23238754272461,
+      "seconds": 87.9
+    },
+    {
+      "episode": 31,
+      "steps": 671,
+      "reward": -704.3855149352551,
+      "violating_step_rate": 0.10581222056631892,
+      "gradient_steps": 13,
+      "lambdas": [
+        0.6690199971199036,
+        0.0,
+        0.0
+      ],
+      "entropy": 3.173897064649142,
+      "approx_kl": 0.012597828031105634,
+      "clip_frac": 0.13285611799130073,
+      "value_loss": 0.026113539647597533,
+      "reward_scale": 54.9722900390625,
+      "seconds": 51.7
+    },
+    {
+      "episode": 32,
+      "steps": 671,
+      "reward": -700.9758817511043,
+      "violating_step_rate": 0.07600596125186289,
+      "gradient_steps": 36,
+      "lambdas": [
+        0.6544671058654785,
+        0.0,
+        0.0
+      ],
+      "entropy": 3.095861189895206,
+      "approx_kl": 0.013347243253924211,
+      "clip_frac": 0.13484612986859348,
+      "value_loss": 0.026683810994856887,
+      "reward_scale": 54.69458770751953,
+      "seconds": 66.5
+    },
+    {
+      "episode": 33,
+      "steps": 671,
+      "reward": -682.6960641611689,
+      "violating_step_rate": 0.05514157973174367,
+      "gradient_steps": 8,
+      "lambdas": [
+        0.6383494138717651,
+        0.0,
+        0.0
+      ],
+      "entropy": 3.1399919986724854,
+      "approx_kl": 0.013523375077056699,
+      "clip_frac": 0.141845703125,
+      "value_loss": 0.01727643341291696,
+      "reward_scale": 54.4113655090332,
+      "seconds": 57.1
+    },
+    {
+      "episode": 34,
+      "steps": 671,
+      "reward": -692.3430597207768,
+      "violating_step_rate": 0.040238450074515646,
+      "gradient_steps": 110,
+      "lambdas": [
+        0.6236474514007568,
+        0.0,
+        0.0
+      ],
+      "entropy": 3.110174443505027,
+      "approx_kl": 0.014276292073720304,
+      "clip_frac": 0.1688135762783614,
+      "value_loss": 0.02245923508466645,
+      "reward_scale": 54.253257751464844,
+      "seconds": 93.6
+    },
+    {
+      "episode": 35,
+      "steps": 671,
+      "reward": -665.7271897706395,
+      "violating_step_rate": 0.028315946348733235,
+      "gradient_steps": 103,
+      "lambdas": [
+        0.6077719330787659,
+        0.0,
+        0.0
+      ],
+      "entropy": 3.0723140563779663,
+      "approx_kl": 0.014491970963647264,
+      "clip_frac": 0.15965038223318684,
+      "value_loss": 0.02209702893657592,
+      "reward_scale": 54.04281997680664,
+      "seconds": 97.3
+    },
+    {
+      "episode": 36,
+      "steps": 671,
+      "reward": -628.8836597808786,
+      "violating_step_rate": 0.022354694485842028,
+      "gradient_steps": 68,
+      "lambdas": [
+        0.5924924612045288,
+        0.0,
+        0.0
+      ],
+      "entropy": 3.0239079734858345,
+      "approx_kl": 0.014510733550089165,
+      "clip_frac": 0.1579029289457728,
+      "value_loss": 0.015670413302038524,
+      "reward_scale": 53.733909606933594,
+      "seconds": 79.3
+    },
+    {
+      "episode": 37,
+      "steps": 671,
+      "reward": -629.7093062734106,
+      "violating_step_rate": 0.03427719821162444,
+      "gradient_steps": 7,
+      "lambdas": [
+        0.5805103778839111,
+        0.0,
+        0.0
+      ],
+      "entropy": 2.997837611607143,
+      "approx_kl": 0.011402777811911489,
+      "clip_frac": 0.10993303571428571,
+      "value_loss": 0.017189379914530685,
+      "reward_scale": 53.47084045410156,
+      "seconds": 58.9
+    },
+    {
+      "episode": 38,
+      "steps": 671,
+      "reward": -637.6606756121619,
+      "violating_step_rate": 0.07153502235469449,
+      "gradient_steps": 101,
+      "lambdas": [
+        0.5729060173034668,
+        0.0,
+        0.0
+      ],
+      "entropy": 2.9593262153096718,
+      "approx_kl": 0.01702266557823341,
+      "clip_frac": 0.18666098536093637,
+      "value_loss": 0.014329550631049246,
+      "reward_scale": 53.19107437133789,
+      "seconds": 94.5
+    },
+    {
+      "episode": 39,
+      "steps": 671,
+      "reward": -608.123887128506,
+      "violating_step_rate": 0.05365126676602087,
+      "gradient_steps": 22,
+      "lambdas": [
+        0.5577383637428284,
+        0.0,
+        0.0
+      ],
+      "entropy": 2.8213794339786875,
+      "approx_kl": 0.017717060379006645,
+      "clip_frac": 0.17229598100212487,
+      "value_loss": 0.017255939458581535,
+      "reward_scale": 52.966941833496094,
+      "seconds": 64.3
+    },
+    {
+      "episode": 40,
+      "steps": 671,
+      "reward": -625.9940041274269,
+      "violating_step_rate": 0.07153502235469449,
+      "gradient_steps": 34,
+      "lambdas": [
+        0.5481966733932495,
+        0.0,
+        0.0
+      ],
+      "entropy": 2.80385184989256,
+      "approx_kl": 0.017459491995396093,
+      "clip_frac": 0.18477785466786692,
+      "value_loss": 0.01886021444464431,
+      "reward_scale": 52.81462860107422,
+      "seconds": 69.9
+    },
+    {
+      "episode": 41,
+      "steps": 671,
+      "reward": -612.4281583470686,
+      "violating_step_rate": 0.026825633383010434,
+      "gradient_steps": 16,
+      "lambdas": [
+        0.5280551314353943,
+        0.0,
+        0.0
+      ],
+      "entropy": 2.754058137536049,
+      "approx_kl": 0.012769617045705672,
+      "clip_frac": 0.1316744894720614,
+      "value_loss": 0.023498747497797012,
+      "reward_scale": 52.64422607421875,
+      "seconds": 61.7
+    },
+    {
+      "episode": 42,
+      "steps": 671,
+      "reward": -566.7216587183016,
+      "violating_step_rate": 0.044709388971684055,
+      "gradient_steps": 82,
+      "lambdas": [
+        0.5169671773910522,
+        0.0,
+        0.0
+      ],
+      "entropy": 2.7154313267731087,
+      "approx_kl": 0.01888352820135812,
+      "clip_frac": 0.20235281592098678,
+      "value_loss": 0.011845387041387035,
+      "reward_scale": 52.42409133911133,
+      "seconds": 89.2
+    },
+    {
+      "episode": 43,
+      "steps": 671,
+      "reward": -596.3785486603243,
+      "violating_step_rate": 0.06110283159463487,
+      "gradient_steps": 12,
+      "lambdas": [
+        0.5063076615333557,
+        0.0,
+        0.0
+      ],
+      "entropy": 2.7829319636027017,
+      "approx_kl": 0.010153995836541677,
+      "clip_frac": 0.10421916966636975,
+      "value_loss": 0.013680528694142899,
+      "reward_scale": 52.23139953613281,
+      "seconds": 60.5
+    },
+    {
+      "episode": 44,
+      "steps": 671,
+      "reward": -578.3996335241941,
+      "violating_step_rate": 0.019374068554396422,
+      "gradient_steps": 36,
+      "lambdas": [
+        0.4868181049823761,
+        0.0,
+        0.0
+      ],
+      "entropy": 2.58299947447247,
+      "approx_kl": 0.016744207375773437,
+      "clip_frac": 0.17124670919858748,
+      "value_loss": 0.0138524255146169,
+      "reward_scale": 52.005775451660156,
+      "seconds": 70.0
+    },
+    {
+      "episode": 45,
+      "steps": 671,
+      "reward": -563.8168588341291,
+      "violating_step_rate": 0.022354694485842028,
+      "gradient_steps": 12,
+      "lambdas": [
+        0.4730289876461029,
+        0.0,
+        0.0
+      ],
+      "entropy": 2.5484599669774375,
+      "approx_kl": 0.011062349425628781,
+      "clip_frac": 0.10650306567549706,
+      "value_loss": 0.014575261467446884,
+      "reward_scale": 51.7838020324707,
+      "seconds": 61.2
+    },
+    {
+      "episode": 46,
+      "steps": 671,
+      "reward": -543.0995151736851,
+      "violating_step_rate": 0.010432190760059613,
+      "gradient_steps": 13,
+      "lambdas": [
+        0.45692986249923706,
+        0.0,
+        0.0
+      ],
+      "entropy": 2.3274894861074595,
+      "approx_kl": 0.014772743387416435,
+      "clip_frac": 0.17493311831584343,
+      "value_loss": 0.01225128798530652,
+      "reward_scale": 51.56965637207031,
+      "seconds": 60.2
+    },
+    {
+      "episode": 47,
+      "steps": 671,
+      "reward": -523.462687080117,
+      "violating_step_rate": 0.028315946348733235,
+      "gradient_steps": 23,
+      "lambdas": [
+        0.44522717595100403,
+        0.0,
+        0.0
+      ],
+      "entropy": 2.366618384485659,
+      "approx_kl": 0.016272867412265878,
+      "clip_frac": 0.17544979342947836,
+      "value_loss": 0.011701723884629167,
+      "reward_scale": 51.38494873046875,
+      "seconds": 66.9
+    },
+    {
+      "episode": 48,
+      "steps": 671,
+      "reward": -526.6289935769188,
+      "violating_step_rate": 0.00894187779433681,
+      "gradient_steps": 20,
+      "lambdas": [
+        0.4281407296657562,
+        0.0,
+        0.0
+      ],
+      "entropy": 2.2510133743286134,
+      "approx_kl": 0.011535406933398917,
+      "clip_frac": 0.1182081650942564,
+      "value_loss": 0.011271149152889848,
+      "reward_scale": 51.215641021728516,
+      "seconds": 65.0
+    },
+    {
+      "episode": 49,
+      "steps": 671,
+      "reward": -548.7967445806812,
+      "violating_step_rate": 0.01639344262295082,
+      "gradient_steps": 20,
+      "lambdas": [
+        0.414686918258667,
+        0.0,
+        0.0
+      ],
+      "entropy": 2.3069722056388855,
+      "approx_kl": 0.013427231385139748,
+      "clip_frac": 0.1354208666831255,
+      "value_loss": 0.016800121497362853,
+      "reward_scale": 51.098060607910156,
+      "seconds": 58.9
+    },
+    {
+      "episode": 50,
+      "steps": 671,
+      "reward": -533.9657129616365,
+      "violating_step_rate": 0.03278688524590164,
+      "gradient_steps": 73,
+      "lambdas": [
+        0.40320777893066406,
+        0.0,
+        0.0
+      ],
+      "entropy": 2.4237924797894204,
+      "approx_kl": 0.015433292278991246,
+      "clip_frac": 0.16921329493187878,
+      "value_loss": 0.011632399659042489,
+      "reward_scale": 50.90907287597656,
+      "seconds": 84.5
+    },
+    {
+      "episode": 51,
+      "steps": 671,
+      "reward": -549.0713047868036,
+      "violating_step_rate": 0.07451564828614009,
+      "gradient_steps": 13,
+      "lambdas": [
+        0.39700064063072205,
+        0.0,
+        0.0
+      ],
+      "entropy": 2.492496820596548,
+      "approx_kl": 0.012774478706817787,
+      "clip_frac": 0.1329627400980546,
+      "value_loss": 0.015043451020923944,
+      "reward_scale": 50.724884033203125,
+      "seconds": 61.4
+    },
+    {
+      "episode": 52,
+      "steps": 671,
+      "reward": -538.8740638737789,
+      "violating_step_rate": 0.03129657228017884,
+      "gradient_steps": 8,
+      "lambdas": [
+        0.37726891040802,
+        0.0,
+        0.0
+      ],
+      "entropy": 2.4829711318016052,
+      "approx_kl": 0.013524861307814717,
+      "clip_frac": 0.131103515625,
+      "value_loss": 0.015757504501380026,
+      "reward_scale": 50.53427505493164,
+      "seconds": 60.1
+    },
+    {
+      "episode": 53,
+      "steps": 671,
+      "reward": -517.0937674416983,
+      "violating_step_rate": 0.022354694485842028,
+      "gradient_steps": 61,
+      "lambdas": [
+        0.36180317401885986,
+        0.0,
+        0.0
+      ],
+      "entropy": 2.486085086572366,
+      "approx_kl": 0.017406630274442742,
+      "clip_frac": 0.18801126171086655,
+      "value_loss": 0.012562343102620274,
+      "reward_scale": 50.35480499267578,
+      "seconds": 76.1
+    },
+    {
+      "episode": 54,
+      "steps": 671,
+      "reward": -535.8662419992334,
+      "violating_step_rate": 0.03576751117734724,
+      "gradient_steps": 39,
+      "lambdas": [
+        0.3500632345676422,
+        0.0,
+        0.0
+      ],
+      "entropy": 2.5664038291344275,
+      "approx_kl": 0.01534681775732539,
+      "clip_frac": 0.15795918592275718,
+      "value_loss": 0.01148436868037933,
+      "reward_scale": 50.16973114013672,
+      "seconds": 69.0
+    },
+    {
+      "episode": 55,
+      "steps": 671,
+      "reward": -528.8168365544793,
+      "violating_step_rate": 0.044709388971684055,
+      "gradient_steps": 56,
+      "lambdas": [
+        0.33767127990722656,
+        0.0,
+        0.0
+      ],
+      "entropy": 2.5772140451839993,
+      "approx_kl": 0.014642022986663505,
+      "clip_frac": 0.16474541815529978,
+      "value_loss": 0.012809641592736756,
+      "reward_scale": 50.0179443359375,
+      "seconds": 74.2
+    },
+    {
+      "episode": 56,
+      "steps": 671,
+      "reward": -499.4153875887599,
+      "violating_step_rate": 0.040238450074515646,
+      "gradient_steps": 25,
+      "lambdas": [
+        0.3243478834629059,
+        0.0,
+        0.0
+      ],
+      "entropy": 2.482875499725342,
+      "approx_kl": 0.01557000761386007,
+      "clip_frac": 0.17297126978635788,
+      "value_loss": 0.010856892578303814,
+      "reward_scale": 49.837623596191406,
+      "seconds": 62.1
+    },
+    {
+      "episode": 57,
+      "steps": 671,
+      "reward": -489.516612572217,
+      "violating_step_rate": 0.02384500745156483,
+      "gradient_steps": 23,
+      "lambdas": [
+        0.30811837315559387,
+        0.0,
+        0.0
+      ],
+      "entropy": 2.3569811323414678,
+      "approx_kl": 0.013678652114164002,
+      "clip_frac": 0.15316828064944432,
+      "value_loss": 0.00930599032131874,
+      "reward_scale": 49.65180587768555,
+      "seconds": 70.6
+    },
+    {
+      "episode": 58,
+      "steps": 671,
+      "reward": -528.0084460380135,
+      "violating_step_rate": 0.028315946348733235,
+      "gradient_steps": 37,
+      "lambdas": [
+        0.2943665087223053,
+        0.0,
+        0.0
+      ],
+      "entropy": 2.411536255398312,
+      "approx_kl": 0.015631930630440143,
+      "clip_frac": 0.16816287014532733,
+      "value_loss": 0.015644799187980795,
+      "reward_scale": 49.51743698120117,
+      "seconds": 71.4
+    },
+    {
+      "episode": 59,
+      "steps": 671,
+      "reward": -495.08779945373595,
+      "violating_step_rate": 0.09538002980625931,
+      "gradient_steps": 12,
+      "lambdas": [
+        0.29132625460624695,
+        0.0,
+        0.0
+      ],
+      "entropy": 2.391534368197123,
+      "approx_kl": 0.014318145763051385,
+      "clip_frac": 0.1473664309208592,
+      "value_loss": 0.011116336371439198,
+      "reward_scale": 49.34848403930664,
+      "seconds": 58.2
+    },
+    {
+      "episode": 60,
+      "steps": 671,
+      "reward": -484.34292672337165,
+      "violating_step_rate": 0.00894187779433681,
+      "gradient_steps": 12,
+      "lambdas": [
+        0.2658568024635315,
+        0.0,
+        0.0
+      ],
+      "entropy": 2.279621640841166,
+      "approx_kl": 0.01303459886306276,
+      "clip_frac": 0.1248162379488349,
+      "value_loss": 0.009096733876504004,
+      "reward_scale": 49.17843246459961,
+      "seconds": 56.3
+    }
+  ],
+  "status": "ok",
+  "eval": {
+    "cost": 2171.030029296875,
+    "emission": 1270.250732421875,
+    "avg_daily_peak": 23.27218907220023,
+    "electricity_consumption": 7636.830078125,
+    "ramping_rate": 5.024507999420166,
+    "discomfort_rate": 0.012606750711671411,
+    "safety_violation_rate": 0.02477645305514158,
+    "soc_violation_rate": 0.02477645305514158,
+    "power_violation_rate": 0.0,
+    "grid_violation_rate": 0.0,
+    "avoidable_violation_rate": 0.02477645305514158,
+    "unavoidable_violation_rate": 0.0,
+    "peak_import_kw": 36.43303680419922,
+    "load_factor": 0.31238863384073756,
+    "cap_exceedance_kwh": 0.0,
+    "pv_self_consumption": 0.60440191710682,
+    "self_sufficiency": 0.2643595016832939,
+    "discomfort_degree_hours": 7.4256792068481445,
+    "battery_equivalent_full_cycles": 9.194067001342773,
+    "hvac_on_transitions_per_building_day": 1.4351713859910582,
+    "barrier_intervention_rate": 0.0,
+    "barrier_intervention_magnitude": 0.0,
+    "cost_cv_across_buildings": 0.44359282540115935,
+    "discomfort_rate_worst_building": 0.05343511450381679
+  },
+  "actuators": {
+    "verified": null,
+    "battery": {
+      "n_charge": 354,
+      "n_rest": 3489,
+      "contrast": 0.09727629274129868,
+      "responds": true
+    },
+    "dhw": {
+      "n_charge": 0,
+      "n_rest": 5220,
+      "responds": null
+    },
+    "hvac": {
+      "heating": {
+        "correlation": 0.8334690250554874,
+        "responds": true
+      },
+      "cooling": {
+        "correlation": 0.8797951914729908,
+        "responds": true
+      },
+      "responds": true
+    }
+  },
+  "eval_steps": 671,
+  "seconds": 4357.3
+}

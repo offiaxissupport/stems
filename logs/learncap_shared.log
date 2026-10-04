@@ -1,0 +1,48 @@
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+10:53:05 reference idle+calibrated  cost=2138 safety_violation_rate=0 discomfort_rate=0.01464 peak_import_kw=39.15
+10:53:51 reference rbc+calibrated   cost=1794 safety_violation_rate=0 discomfort_rate=0.01464 peak_import_kw=64.08
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+11:10:35 episodes  10 train_reward=  -698.2 cost=2131 safety_violation_rate=0 discomfort_rate=0.0122 peak_import_kw=39.69 battery_equivalent_full_cycles=7.064
+11:26:30 episodes  20 train_reward=  -580.8 cost=2090 safety_violation_rate=0 discomfort_rate=0.01423 peak_import_kw=40.64 battery_equivalent_full_cycles=9.818
+11:42:11 episodes  30 train_reward=  -495.9 cost=1987 safety_violation_rate=0 discomfort_rate=0.01464 peak_import_kw=40.68 battery_equivalent_full_cycles=12.33
+11:59:32 episodes  40 train_reward=  -453.6 cost=1892 safety_violation_rate=0 discomfort_rate=0.01505 peak_import_kw=40.89 battery_equivalent_full_cycles=15.29
+12:15:53 episodes  50 train_reward=  -419.2 cost=1861 safety_violation_rate=0 discomfort_rate=0.01505 peak_import_kw=40.68 battery_equivalent_full_cycles=15.33
+12:51:08 episodes  60 train_reward=  -402.2 cost=1917 safety_violation_rate=0 discomfort_rate=0.01505 peak_import_kw=40.23 battery_equivalent_full_cycles=11.19

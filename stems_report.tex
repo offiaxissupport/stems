@@ -1,0 +1,1270 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{multicol}
+\usepackage{caption}
+\usepackage{longtable}
+
+\hypersetup{colorlinks=true, linkcolor=blue, citecolor=blue, urlcolor=blue}
+
+\title{\textbf{STEMS: Safe Multi-Agent Reinforcement Learning for \\
+Buildings, Heat Pumps and Electric Vehicles} \\[6pt]
+\large Replication, Mathematics, and Experimental Record on Real CityLearn Data}
+\author{}
+\date{\today}
+
+\newcommand{\R}{\mathbb{R}}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This report is a complete record of a from-scratch reimplementation of STEMS
+(Spatial-Temporal Enhanced Multi-Agent Safe Building Energy Management System)
+\cite{stems2025} and of the extensions built on top of it. It documents, in
+order: the real CityLearn environments used and every device equation they
+expose; the full mathematical formulation of the architecture, from the
+building-similarity graph through the spatial-temporal encoder to the
+constrained actor-critic update; a unified control-barrier framework covering
+the battery, the hot-water tank and electric-vehicle charging as instances of
+one object; the evaluation metrics; and each experiment that was run -- including a sweep of a shared grid
+constraint across a fleet of deadline-constrained vehicles -- with its
+measurements, its limitations, and -- where a result was negative or a mechanism
+inactive -- the specific work planned to address it. A dedicated section
+describes standalone operation of the heat-pump and hot-water controller and
+sets out what would be required to run it on a commercial heat-pump platform.
+All measurements reported here were taken on the real simulator; anything
+synthesised or derived is marked as such where it appears.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% =====================================================================
+\section{Introduction and Scope}
+\label{sec:intro}
+% =====================================================================
+
+Buildings account for a large and increasingly electrified share of grid demand.
+Batteries, heat pumps, hot-water stores and electric vehicles are all
+controllable, all constrained, and all coupled through the same electrical
+connection. Coordinating them is a constrained sequential decision problem: an
+agent must reduce cost, peak demand and emissions while keeping every device
+inside its physical limits and keeping occupants comfortable. Safe reinforcement
+learning -- RL augmented with an explicit safety layer -- is the approach taken by
+the paper this work reimplements \cite{stems2025}.
+
+\subsection{What this report covers}
+
+The work proceeded in four stages, and this report follows that order:
+
+\begin{enumerate}[nosep]
+\item \textbf{Replication on real data.} A faithful reimplementation of the
+STEMS architecture, run on a real eight-building CityLearn simulation, with
+every device parameter read from the simulator rather than assumed
+(Sections~\ref{sec:citylearn}--\ref{sec:reward}).
+\item \textbf{Calibration and safety experiments} on the battery-side control
+barrier (Section~\ref{sec:exp-battery}).
+\item \textbf{Thermal extension} -- hot water and the heat pump, including
+anticipatory pre-heating and weather-dependent efficiency
+(Sections~\ref{sec:exp-dhw}--\ref{sec:exp-stress}), with standalone operation and
+platform integration treated separately in Section~\ref{sec:standalone}.
+\item \textbf{Electric vehicles} -- unifying the hot-water and vehicle problems
+under one barrier, and constructing an environment in which buildings and
+vehicles coexist (Sections~\ref{sec:exp-ev}--\ref{sec:exp-merged}).
+\end{enumerate}
+
+\subsection{Reporting conventions}
+
+Three conventions are used throughout, and are worth stating because they shape
+how the numbers should be read.
+
+\begin{itemize}[nosep]
+\item \textbf{Measured, not assumed.} Every device rate, capacity and efficiency
+used by the controller is read from the live simulator object. Where a quantity
+is estimated rather than measured, the estimator is described and its inputs are
+restricted to information available at that timestep.
+\item \textbf{Fail loud.} A missing observation, an absent device or an
+unsupported configuration raises an error rather than resolving silently to a
+default. Simulator corrections are announced and stamped into the run metadata.
+\item \textbf{Negative results are reported in place.} Where a mechanism had no
+effect, or improved one quantity at the expense of another, the measurement is
+given as observed and followed by the specific planned work
+(Section~\ref{sec:limitations}).
+\end{itemize}
+
+% =====================================================================
+\section{The CityLearn Environments}
+\label{sec:citylearn}
+% =====================================================================
+
+CityLearn (2.6.0b1) is an open-source Gymnasium building-energy simulator. It
+exposes per-building observations and actions and advances the simulation using
+physically motivated device models driven by historical weather and load data.
+
+\subsection{The building schema}
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Parameter & Value \\
+\midrule
+Source & NREL ResStock AMY2018--2021, Travis County, Texas \\
+Buildings simulated & 8 (of 100 candidates), decentralised \\
+Horizon & steps 0--8759 at 3600\,s $\Rightarrow$ one full year, hourly \\
+Devices per building & bidirectional heat pump (cooling + heating), \\
+ & electric DHW heater, battery, DHW storage tank, PV \\
+Sizing & \texttt{autosize: true}; devices sized at \texttt{reset()} \\
+Observations & 45 active; 28 selected by name, $+2$ in heat-pump mode \\
+Actions & \texttt{[dhw\_storage, electrical\_storage, cooling\_or\_heating\_device]} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Observations are mapped from CityLearn's names to the STEMS subset \emph{by
+name}, so the selection is explicit and auditable rather than positional.
+
+\subsection{Device equations}
+
+\paragraph{Storage (battery and DHW tank).} Both inherit the same base dynamics.
+For requested energy $e$ (positive = charge):
+\begin{equation}
+\text{SOC}^{\text{init}} = \max\!\big(0,\; \text{SOC}_{t-1}\, C\, (1-\lambda)\big),
+\label{eq:soc-init}
+\end{equation}
+\begin{equation}
+\text{SOC}_t = \frac{1}{C}\begin{cases}
+\min\big(\text{SOC}^{\text{init}} + e\sqrt{\eta},\; C\big) & e \geq 0, \\[4pt]
+\max\big(0,\; \text{SOC}^{\text{init}} + e/\sqrt{\eta}\,\big) & e < 0,
+\end{cases}
+\label{eq:soc-update}
+\end{equation}
+with capacity $C$, round-trip efficiency $\eta$ and standby loss $\lambda$.
+
+\paragraph{Heat pump.} A temperature-dependent Carnot coefficient of performance
+is computed for each mode and clipped to $[0,20]$:
+\begin{equation}
+\text{CoP}_{\text{heat}}(T_{\text{out}}) = \eta\,\frac{T^{\text{heat}}_{\text{tgt}} + 273.15}{T^{\text{heat}}_{\text{tgt}} - T_{\text{out}}},
+\qquad
+\text{CoP}_{\text{cool}}(T_{\text{out}}) = \eta\,\frac{T^{\text{cool}}_{\text{tgt}} + 273.15}{T_{\text{out}} - T^{\text{cool}}_{\text{tgt}}},
+\label{eq:cop}
+\end{equation}
+\begin{equation}
+P_{\text{out}} = \min\!\big(|a|\,P_{\text{nom}},\, P_{\text{nom}}\big)\cdot \text{CoP}, \qquad
+P_{\text{in}} = P_{\text{out}} / \text{CoP}.
+\label{eq:hp-power}
+\end{equation}
+Which mode is active is \emph{not} selected by the sign of the action: an
+exogenous, data-derived \texttt{hvac\_mode} schedule gates it, and the scalar
+action scales whichever device that schedule has enabled. This is why the
+comfort term must be season-aware (Section~\ref{sec:reward}).
+
+\paragraph{DHW heater.} A resistive model,
+$P_{\text{out}} = \min(|a| P_{\text{nom}}, P_{\text{nom}})\,\eta$ with
+$\eta \approx 0.9$--$0.99$, charging the tank through
+Eqs.~\ref{eq:soc-init}--\ref{eq:soc-update}.
+
+\paragraph{PV.} Generation is read from a PySAM PVWatts simulation executed once
+at \texttt{reset()}, constrained by each building's roof area.
+
+CityLearn ships a default reward; STEMS does not use it and computes its own
+(Section~\ref{sec:reward}).
+
+\subsection{An environment containing both buildings and vehicles}
+\label{sec:merged-schema}
+
+Neither shipped dataset expresses the full problem. The Travis schema has no
+chargers. The EV challenge dataset has chargers but \emph{no thermal
+observations at all} -- no indoor temperature, setpoints, hot water, occupancy or
+cooling demand -- so it cannot represent the building side.
+
+\texttt{setup\_citylearn\_ev.py} constructs a merged schema,
+\texttt{tx\_travis\_8b\_ev}: the Travis buildings unchanged, plus charger
+hardware, vehicle battery definitions and per-charger schedules.
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Buildings & 8, of which \textbf{6 have a charger} \\
+Observation dimension & 35 $=$ 28 base $+$ 2 heat-pump $+$ 5 EV \\
+Action dimension & 4: DHW, battery, heat pump, EV charger \\
+Charger hardware & 11\,kW / 7.4\,kW, $\eta = 0.95$, 7.2\,kW discharge \\
+Vehicle batteries & 40--75\,kWh \\
+Charging lead time & \textbf{5.7--7.4\,h} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+No building data is copied. CityLearn resolves a charger file as
+\texttt{os.path.join(root\_directory, charger\_simulation)}, and
+\texttt{os.path.join} returns an absolute right-hand side unchanged, so the
+charger schedules live in the project directory while every building file
+continues to resolve from the untouched simulator cache. The thermal side of the
+merged schema is therefore identical to the original.
+
+Partial penetration (6 of 8) is deliberate: it leaves two buildings that can
+only \emph{offer} flexibility and never demand it.
+
+\paragraph{Provenance.} The building thermal models, loads, weather, pricing and
+carbon intensity are real and unmodified. The \textbf{vehicle schedules are
+synthetic} -- ResStock carries no vehicle data -- generated from a seeded,
+documented commuter model: weekday departure $\sim$07:30 and return $\sim$17:30,
+weekend 09:30/15:30, stay-at-home probability 12\%/45\%, required state of
+charge at departure $\mathcal U(0.70, 0.90)$, arrival state of charge
+$\mathcal U(0.25, 0.55)$ decaying with time away. Every result measured on this
+schema carries that caveat.
+
+\subsection{Heterogeneous buildings}
+
+CityLearn buildings need not agree with one another: in the EV challenge data
+the native action dimension is 1, 2 or 3 and the observation dimension 28, 35,
+37 or 42, because only some buildings own a charger and charger identifiers are
+embedded in observation names.
+
+The architecture requires one shape for all buildings, since the graph network
+stacks them into a single matrix. The wrapper therefore builds a \emph{canonical
+padded layout} together with a per-building map into native indices:
+
+\begin{itemize}[nosep]
+\item \textbf{Observations} $=$ base features $+\;5 \times$ (EV slots). A
+building with fewer bays is zero-padded, and a padded slot reports
+\texttt{connected\_state} $=0$, which the vehicle barrier already interprets as
+"no vehicle". An absent charger and an empty bay therefore follow the same code
+path.
+\item \textbf{Actions} follow a canonical order restricted to devices some
+building owns. Slots a building lacks are \emph{removed} before the vector
+reaches the simulator, because CityLearn sizes its action array to the devices
+that exist.
+\end{itemize}
+
+On the homogeneous building schema every map is the identity, so this reduces
+exactly to the original behaviour -- verified by test and by re-running a full
+study (Section~\ref{sec:exp-regression}).
+
+% =====================================================================
+\section{Architecture and Mathematical Formulation}
+\label{sec:stems}
+% =====================================================================
+
+Per timestep, for each building $i$:
+$$
+o_i \;\xrightarrow{\text{normalise}}\;
+\underbrace{\text{GCN} \oplus \text{Transformer}}_{\text{shared encoder}}
+\;\to\; r_i \in \R^{64} \;\xrightarrow{\pi_\theta}\; a_i^{\text{raw}}
+\;\xrightarrow{\text{barrier}}\; a_i^{\text{safe}} \;\to\; \text{CityLearn}.
+$$
+
+\subsection{Building similarity graph}
+
+Buildings are connected by a graph combining geographic proximity and functional
+similarity:
+\begin{equation}
+w_{ij} = \alpha\, \exp\!\Big(-\frac{d_{ij}^2}{2\sigma_d^2}\Big) + \beta\, \exp\!\Big(-\frac{\|f_i - f_j\|^2}{2\sigma_f^2}\Big), \qquad w_{ii} = 0,
+\label{eq:graph}
+\end{equation}
+with $d_{ij}$ the geographic distance and $f_i$ a normalised functional feature
+vector (battery capacity, floor area).
+
+\subsection{Spatial encoder}
+
+A three-layer graph convolutional network propagates information across the $B$
+buildings using the symmetrically normalised adjacency $\hat A = A + I$:
+\begin{equation}
+H^{(l+1)} = \sigma\!\Big(\hat D^{-1/2} \hat A\, \hat D^{-1/2}\, H^{(l)}\, W^{(l)}\Big), \qquad \hat D_{ii} = \sum_j \hat A_{ij},
+\label{eq:gcn}
+\end{equation}
+with $\sigma = \mathrm{ReLU}$ and hidden width 64.
+
+\subsection{Temporal encoder}
+
+A multi-head self-attention block attends over a rolling $T=24$\,h window of each
+building's own history:
+\begin{equation}
+e_{\tau,\tau'} = \frac{Q_\tau K_{\tau'}^\top}{\sqrt{d_k}}, \qquad
+z_{i,t} = \mathrm{LayerNorm}\Big(x_{i,t} + \sum_{\tau'} \mathrm{softmax}_{\tau'}(e_{t,\tau'})\, V_{\tau'}\Big),
+\label{eq:transformer}
+\end{equation}
+with 4 heads, a 32-dimensional embedding and fixed sinusoidal positional
+encodings.
+
+\subsection{Fusion and per-building actor-critic}
+
+\begin{equation}
+r_i = W_s h_i + W_t z_i + b.
+\label{eq:fusion}
+\end{equation}
+Each building has its own squashed-Gaussian actor, value critic and multi-head
+cost critic conditioned on $r_i$:
+\begin{align}
+z &\sim \mathcal N(\mu(r_i), \sigma(r_i)^2), \quad a = \tanh(z), \\
+\log \pi_\theta(a\mid r_i) &= \log \mathcal N(z;\mu,\sigma^2) - \sum_d \log\!\big(1 - \tanh^2(z_d) + \epsilon\big), \\
+V_\phi(r_i) &\in \R, \qquad V^c_\psi(r_i) \in \R^K \ (K=3).
+\end{align}
+
+\subsection{Constrained update}
+
+Training is on-policy, one update per full-year episode. Critics are trained by
+TD regression against target networks; the actor by a generalised advantage
+estimate ($\gamma = 0.99$, $\lambda = 0.95$) penalised by the Lagrangian cost
+advantage, with an auto-tuned entropy temperature (target entropy
+$-|\mathcal A|$):
+\begin{align}
+\mathcal L_{\text{critic}} &= \mathbb E\big[(V_\phi(r_i) - (r + \gamma V_\phi^{\text{tgt}}(r_i')))^2\big], \\
+\mathcal L_{\text{cost}} &= \mathbb E\big[(V^c_\psi(r_i) - (c + \gamma V^{c,\text{tgt}}_\psi(r_i')))^2\big], \\
+\hat A_i^{\text{eff}} &= \hat A_i^{\text{GAE}} - \textstyle\sum_k \max(\lambda_k,0)\, \hat A^{c}_{i,k}, \\
+\mathcal L_{\text{actor}} &= -\mathbb E\big[\hat A_i^{\text{eff}}\, \log\pi_\theta(a_i\mid r_i)\big] + \alpha\, \mathbb E[\log\pi_\theta(a_i\mid r_i)].
+\end{align}
+
+% =====================================================================
+\section{Safety: One Barrier Framework, Four Devices}
+\label{sec:safety}
+% =====================================================================
+
+\subsection{Classical barriers}
+
+Three barriers are evaluated on the \emph{next predicted} state:
+\begin{align}
+h_1&: \text{SOC} \in [\text{SOC}_{\min}, \text{SOC}_{\max}] = [0.1, 0.9], \label{eq:h1}\\
+h_2&: |e_i| \le P_{\text{building,max}}, \label{eq:h2}\\
+h_3&: \textstyle\sum_i \max(e_i, 0) \le P_{\text{grid,max}}. \label{eq:h3}
+\end{align}
+
+Because $h_1$ is decoupled across buildings it is solved \emph{analytically} per
+building rather than through a general quadratic program -- exact, and fast
+enough for the $8760 \times 8$ step budget. With the per-building state-of-charge
+change per unit action $\rho_i = P_{\text{nom},i}/C_i$ read from the real
+battery, a robust margin $m$ and an anticipatory horizon $H$:
+\begin{equation}
+[\ell_i, u_i] = \Big[\text{SOC}_{\min} + m + \tfrac{1}{2}\rho_i H,\;\; \text{SOC}_{\max} - m - \tfrac{1}{2}\rho_i H\Big],
+\label{eq:enforced-band}
+\end{equation}
+\begin{equation}
+a^{\text{batt,safe}}_i =
+\begin{cases}
+\mathrm{clip}\Big(a^{\text{nom}}_i,\; \tfrac{\ell_i - \text{SOC}_i}{\rho_i},\; \tfrac{u_i - \text{SOC}_i}{\rho_i}\Big) & \text{if feasible}, \\[6pt]
++1 & \text{if } \text{SOC}_i < \ell_i \ \text{(recover: charge)}, \\[2pt]
+-1 & \text{if } \text{SOC}_i > u_i \ \text{(recover: discharge)}.
+\end{cases}
+\label{eq:cbf-projection}
+\end{equation}
+The projection is feasible by construction: a recovery action exists even when
+the state is already outside the band, so the shield never falls back to an
+all-zero emergency action.
+
+\subsection{Lagrangian safety pressure}
+
+Alongside the hard shield, a soft penalty trains the \emph{policy} to be safe,
+with one multiplier per constraint. With cost-rate error
+$\epsilon_k = J_{c_k} - d$ and target rate $d$:
+\begin{equation}
+I_k \leftarrow \mathrm{clip}(I_k + k_i \epsilon_k,\, 0,\, \lambda_{\max}), \qquad
+\lambda_k \leftarrow \mathrm{clip}\big(k_p \epsilon_k + I_k + k_d\, \mathrm{relu}(J_{c_k}^{(t)} - J_{c_k}^{(t-1)}),\, 0,\, \lambda_{\max}\big).
+\label{eq:pid-lagrangian}
+\end{equation}
+
+\subsection{The unification: deadline-constrained storage}
+\label{sec:deadline}
+
+Three of the four controllable devices are the same mathematical object:
+
+\begin{center}
+\emph{a store that must reach a required state of charge by a deadline, while
+charging at a finite rate.}
+\end{center}
+
+\begin{table}[h]
+\centering
+\caption{The same barrier, three devices.}
+\label{tab:unification}
+\small
+\begin{tabular}{lccc}
+\toprule
+ & DHW tank & Electric vehicle & Battery \\
+\midrule
+Deadline & implicit: horizon $L$ & \textbf{declared} & none (a band) \\
+Requirement & forecast demand $/\,C$ & \textbf{declared} & $\text{SOC}_{\min}$ \\
+Capacity & fixed & \textbf{varies per arrival} & fixed \\
+Rate $\rho$ & $\min(c, P\eta/C)$ & $P_{\text{ch}}\eta / C_{\text{batt}}$ & $P_{\text{nom}}/C$ \\
+Measured lead time & 1.2--1.9\,h & 5.7--7.4\,h & --- \\
+Slack & always 0 & \textbf{positive} & --- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\texttt{DeadlineStorageBarrier} implements the shared mechanism once; the
+hot-water and vehicle barriers are subclasses supplying only a requirement
+function. This is a discrete-time, rate-limited instance of input-constrained
+control-barrier methods, in which safety under actuator limits is certified by
+predicting forward under a backup control (here, "charge at maximum") over a
+finite horizon.
+
+\paragraph{Horizon rule.} With gap $g = s^{\text{req}} - s$ and rate $\rho$,
+\begin{equation}
+\text{steps\_needed} = \lceil g / \rho \rceil, \qquad
+\text{slack} = \text{steps\_to\_deadline} - \text{steps\_needed},
+\label{eq:horizon-rule}
+\end{equation}
+and $\text{slack} \le 0$ is a \emph{latest-start} trigger: charge now or miss.
+The hot-water tank passes $\text{steps\_to\_deadline} = 0$, so every unmet
+requirement is immediately urgent; a vehicle passes its real time to departure,
+which is what creates deferral room.
+
+\paragraph{Projection.} Monotone -- it raises the action and never lowers one, so
+it can add readiness but can never veto a policy that already charges harder:
+\begin{equation}
+a^{\text{safe}}_i = \max\Big(a^{\text{nom}}_i,\ \min\big(c_i,\ \tfrac{\max(s^{\text{req}}_i - s_i,\,0)}{\rho_i}\,c_i\big)\Big).
+\label{eq:deadline-projection}
+\end{equation}
+
+\subsection{Hot water: estimating the requirement}
+\label{sec:dhw-forecast}
+
+CityLearn exposes hot-water demand for the current step only; there is no demand
+forecast observation. The requirement is therefore estimated online as an
+hour-of-day climatology over already-observed steps, per building $i$, hour $h$
+and weekday/weekend flag $w$:
+\begin{equation}
+m_{i,h,w} \leftarrow m_{i,h,w} + \alpha\,(d_{i,t} - m_{i,h,w}),
+\label{eq:ewma}
+\end{equation}
+\begin{equation}
+\hat D_i(L) = \sum_{k=1}^{L} m_{i,(h+k)\bmod 24,\,w}\,\big(1 + g\,\mathrm{relu}(\bar T - \hat T_{t+k})\big),
+\label{eq:dhw-forecast}
+\end{equation}
+with a cold-weather uplift. No future information enters: $\hat T_{t+k}$ comes
+from the 1/2/3-step outdoor temperature predictions already present in the
+observation vector, and $m$ is built only from past steps. During warm-up the
+estimator falls back to $L \cdot d_{i,t}$, which never reports less demand than
+is occurring. The barrier is
+\begin{equation}
+h_4:\quad \text{SOC}^{\text{dhw}}_i \;\geq\; \mathrm{clip}\!\left(\frac{\hat D_i(L)}{C_i} + m_{\text{dhw}} + \kappa\, \delta^{\text{cop}}_i,\ 0,\ s_{\max}\right).
+\label{eq:h4}
+\end{equation}
+
+\subsection{Weather-dependent efficiency}
+\label{sec:weather}
+
+Weather enters twice.
+
+\paragraph{Efficiency-aware power barriers.} Space conditioning draws
+$|a| P_{\text{nom}}$ electrical, and the thermal service that buys scales with
+the coefficient of performance, so the same comfort costs more power on a cold
+hour. The guard counts that draw and derates the enforced cap in proportion to
+the efficiency shortfall against a rated reference:
+\begin{equation}
+P^{\text{eff}}_{\text{max},i} = P_{\text{max}}\Big(1 - \mathrm{clip}\big(1 - \tfrac{\text{CoP}_i(T_{\text{out}})}{\text{CoP}_i(T_{\text{ref}})},\,0,\,0.5\big)\Big).
+\label{eq:cop-derate}
+\end{equation}
+
+\paragraph{Cold-front anticipation.} A falling temperature forecast means both
+higher upcoming demand and lower efficiency, so it is worth storing heat before
+the front arrives:
+\begin{equation}
+\delta^{\text{cop}}_i = \mathrm{clip}\!\left(\frac{\text{CoP}_i(T_t) - \min_{k \le H}\text{CoP}_i(\hat T_{t+k})}{\text{CoP}_i(T_t)},\ 0,\ 1\right),
+\label{eq:cop-drop}
+\end{equation}
+which is identically zero under steady or improving weather.
+
+\subsection{Coupled feasibility}
+\label{sec:coupled}
+
+Each barrier is individually feasibility-guaranteed. That property does not
+survive coupling. Under a shared power cap, meeting every deadline requires
+\begin{equation}
+\sum_i \frac{(s^{\text{req}}_i - s_i)\,C_i}{\eta_i} \;\le\; P_{\text{cap}}\, \Delta t\, T,
+\label{eq:coupled-feasibility}
+\end{equation}
+with $T$ the time to the earliest binding deadline. When this fails the safe set
+is \emph{empty}: no action sequence satisfies every deadline and the cap
+simultaneously, and no per-device projection can repair it.
+
+The implementation detects the condition rather than absorbing it.
+\texttt{coupled\_feasibility()} evaluates Eq.~\ref{eq:coupled-feasibility};
+\texttt{prioritise()} allocates the available power earliest-deadline-first, so
+that when something must slip the choice is an explicit policy rather than an
+artifact of array ordering; and \texttt{CBFShield.feasibility\_report()} surfaces
+both. Reporting an unreachable requirement is the alternative to claiming a
+guarantee that does not hold.
+
+% =====================================================================
+\section{Reward and Metrics}
+\label{sec:reward}
+% =====================================================================
+
+The reward decomposes additively into four terms per building per timestep:
+\begin{align}
+r^{\text{econ}}_i &= -\mu\, v_t\, e_i, \label{eq:r-econ}\\
+r^{\text{stab}}_i &= \alpha_g\Big(1 - \tfrac{E_{\text{grid}}}{P_{\text{grid,max}}}\Big)^2
++ \alpha_b\Big(1 - \tfrac{|e_i|}{P_{\text{building,max}}}\Big)
+- \beta_r \tfrac{|e_i - e_i^{\text{prev}}|}{P_{\text{building,max}}}, \label{eq:r-stab}\\
+r^{\text{comfort}}_i &= -\lambda_c \cdot d(T^{\text{in}}_i)^2, \qquad
+d(T^{\text{in}}) = \begin{cases}
+T^{\text{in}} - T^{\text{cool}} & T^{\text{in}} > T^{\text{cool}} \\
+T^{\text{heat}} - T^{\text{in}} & T^{\text{in}} < T^{\text{heat}} \\
+0 & \text{otherwise}
+\end{cases}, \label{eq:r-comfort}\\
+r^{\text{renew}}_i &= \xi \cdot \min\!\Big(\tfrac{\text{solar}_i}{\max(\text{load}_i,\epsilon)},\, 1\Big). \label{eq:r-renew}
+\end{align}
+
+The dual-setpoint deadband in Eq.~\ref{eq:r-comfort} is a correctness
+requirement rather than a refinement: with a single cooling setpoint the agent is
+penalised for being comfortably warm in winter. Any control mode that drives the
+heat pump enables it automatically.
+
+\paragraph{Metrics.} Seven quantities are computed from \emph{observed} post-step
+state, never from the barrier's internal model, so the safety figure cannot be
+influenced by the shield's own assumptions: cost, emissions, average daily peak,
+total consumption, ramping rate, discomfort rate, and safety violation rate.
+Metrics 1--5 are reported normalised against a rule-based reference controller,
+following the convention of the metric definition; 6--7 are absolute. Violations
+are additionally decomposed into \emph{avoidable} and \emph{unavoidable} from the
+pre-action state, which distinguishes a control failure from a physically forced
+one. Hot-water experiments add readiness rate, coverage rate, energy deficit and
+mean tank state of charge.
+
+% =====================================================================
+\section{Experiments}
+\label{sec:experiments}
+% =====================================================================
+
+\subsection{E1 --- Battery calibration and the safety ablation}
+\label{sec:exp-battery}
+
+The dominant factor in the measured safety-violation rate is how precisely the
+barrier's state-of-charge model matches each building's actual battery. Reading
+the real per-building dynamics gives
+$\rho_i = P_{\text{nom},i}/C_i \in [0.178, 0.533]$ -- a threefold variation across
+eight buildings. An earlier implementation used a single constant $0.1$ for
+every building.
+
+The same seeded nominal policy was replayed through the real environment under
+different safety configurations, which isolates the shield's marginal effect
+from training noise.
+
+\begin{table}[h]
+\centering
+\caption{E1: safety configuration ablation (800 steps $\times$ 2 seeds).}
+\label{tab:ablation}
+\begin{tabular}{lcc}
+\toprule
+Safety configuration & Violation rate & Cost \\
+\midrule
+No barrier (raw policy) & 0.7195 & 7676 \\
+Barrier, single uniform rate estimate & 0.0945 & 7777 \\
+Barrier $+$ real per-building calibration & 0.0110 & 7703 \\
+\quad $+$ robust margins & 0.0000 & 7705 \\
+\quad $+$ anticipatory buffer & 0.0000 & 7662 \\
+\textbf{Full configuration} & \textbf{0.0000} & \textbf{7649} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Three observations. Calibration precision accounts for most of the improvement:
+a uniform rate estimate leaves a 9.45\% violation rate even with the shield
+active, because it under-projects the safe action relative to what each battery
+actually does. Per-building calibration alone reaches $0.0110$. The full
+configuration reaches zero measured violations and simultaneously the lowest
+cost, because on this dataset the power and grid limits never bind -- loads are
+10--40\,kW against far larger caps -- so the state-of-charge barrier is the only
+active constraint and it is now solved exactly.
+
+\subsection{E2 --- Converged full-year training run}
+\label{sec:exp-converged}
+
+A 15-episode run over full-year (8760-step) episodes, seed 0, with the thermal
+actuators under control.
+
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+Metric & Reference controller & STEMS \\
+\midrule
+cost & 34008.88 & 15219.87 \\
+emissions & 21071.71 & 8688.99 \\
+average daily peak & 36.78 & 16.47 \\
+electricity consumption & 142816.61 & 55219.75 \\
+ramping rate & 6.368 & 4.804 \\
+discomfort rate & 0.0001 & 0.0001 \\
+safety violation rate & 0.6465 & \textbf{0.0000} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Episode reward rose from 205 to 671 between episodes 2 and 15 while the measured
+violation rate remained at $0.0000$ in \emph{every} episode: the safety property
+held throughout learning, not only at convergence.
+
+\paragraph{Limitation.} This run predates the hot-water correction described in
+Section~\ref{sec:defects}, so it is a valid \emph{heat-pump-only} result rather
+than a joint hot-water and heat-pump one. The planned remedy is
+Section~\ref{sec:limitations}, item~2.
+
+\subsection{E3 --- Hot-water lead time}
+\label{sec:exp-leadtime}
+
+CityLearn charges the tank by $e = a\,C$ but clamps that to the heater's
+one-hour output, so the achievable state-of-charge gain in one step is
+\begin{equation}
+\rho^{\text{dhw}}_i = \min\!\Big(c_i,\ \frac{P_{\text{nom},i}\,\eta_i}{C_i}\Big),
+\qquad \tau_i = 1/\rho^{\text{dhw}}_i \ \text{hours}.
+\label{eq:dhw-rate}
+\end{equation}
+
+Measured across the eight buildings: $\rho^{\text{dhw}} \in [0.52, 0.85]$ and
+$\tau \in [1.17, 1.92]$\,h, mean $1.60$\,h. Equation~\ref{eq:dhw-rate} was
+validated against the simulator rather than assumed: charging an empty tank at
+maximum action for one step moves the state of charge to within 15\% of
+$\rho^{\text{dhw}}_i$ for every building, the residual being tank efficiency and
+standby loss.
+
+Since $\tau_i > 1$\,h everywhere, a controller that responds to demand
+\emph{after} observing it is structurally too late. This is the measurement that
+motivates a pre-heat horizon $L \ge 2$.
+
+\subsection{E4 --- Anticipatory pre-heating}
+\label{sec:exp-dhw}
+
+1500 steps $\times$ 2 seeds over the heating season. The nominal controller is
+\emph{price-aware but reactive}: it refills the tank only once demand has
+appeared and declines to heat above its running-mean price. Measuring against a
+controller that is already trying to be economical makes the barrier's
+contribution interpretable as the value of anticipation specifically. Every
+configuration is graded by the \emph{same} fixed evaluation barrier, a separate
+instance from the one being varied.
+
+\begin{table}[h]
+\centering
+\caption{E4: anticipatory pre-heating. Readiness and coverage higher is better;
+deficit, cost and \$/kWh lower is better.}
+\label{tab:preheat}
+\small
+\begin{tabular}{lccccc}
+\toprule
+Configuration & Readiness & Covered & Deficit [kWh] & Cost & DHW \$/kWh \\
+\midrule
+No pre-heat (reactive) & 0.907 & 0.939 & 1026.5 & 3021.6 & 0.2200 \\
+\quad $+$ efficiency-aware power guard & 0.907 & 0.939 & 1026.5 & 3021.6 & 0.2200 \\
+Pre-heat $L=1$ & 0.928 & 0.950 & 661.7 & 3025.9 & 0.2300 \\
+Pre-heat $L=2$ & 0.961 & 0.958 & 90.6 & 3033.1 & 0.2411 \\
+Pre-heat $L=3$ & 0.989 & 0.968 & 33.8 & 3039.0 & 0.2936 \\
+\quad $+$ cold-front anticipation ($L=2$) & 0.982 & 0.964 & 67.3 & 3035.6 & 0.2517 \\
+\textbf{Full ($L=2$, weather $+$ margin)} & \textbf{0.991} & \textbf{0.970} & \textbf{47.4} & 3038.5 & 0.2571 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Positive result 1: the horizon is set by the physics.} Readiness rises
+monotonically with $L$ and the energy deficit falls by 86\% between $L=1$ and
+$L=2$ ($661.7 \to 90.6$\,kWh), improving only slowly thereafter. This is the
+discontinuity Eq.~\ref{eq:dhw-rate} predicts: with a mean time-to-heat of
+$1.60$\,h a one-hour horizon cannot in general close the gap in time, and a
+two-hour horizon can. The horizon is determined by measured device physics, not
+selected by preference -- the same lesson as the battery calibration in E1,
+applied to a different actuator.
+
+\paragraph{Positive result 2: targeted anticipation is cheaper than uniform
+conservatism.} Comparing $L=3$ against the full configuration ($L=2$ plus the
+cold-front term and a wider margin): the full configuration reaches higher
+readiness ($0.991$ vs $0.989$) and better coverage while paying 12\% less per
+kWh of hot-water heating ($0.2571$ vs $0.2936$). Extending the horizon raises the
+requirement at \emph{every} hour; conditioning on the forecast raises it only
+when the weather signal justifies it, since Eq.~\ref{eq:cop-drop} is identically
+zero under steady weather.
+
+\paragraph{Negative result 1: readiness is not free.} Every configuration that
+improves readiness also spends more: hot-water electricity rises from $196.2$ to
+$238.4$\,kWh and the mean price paid per kWh from $0.2200$ to $0.2571$, lifting
+total cost by 0.6\%. The mechanism differs from E1, where the barrier only ever
+\emph{restricted} an action the policy already wanted: here the barrier
+\emph{commands} heating at hours the policy would have skipped, and because the
+requirement is driven by demand rather than price those hours are on average
+more expensive than the ones a price-following controller selects.
+\textbf{Planned work:} the barrier currently heats as late as the constraint
+allows. Selecting \emph{when within the horizon} to pre-heat -- the earliest
+inexpensive hour rather than the last feasible one -- should recover most of the
+premium and turn the barrier into a load-shifting mechanism
+(Section~\ref{sec:limitations}, item~3).
+
+\paragraph{Negative result 2: the efficiency-aware power guard is inactive.} The
+first two rows are identical to every reported digit. This is expected rather
+than faulty: per-building loads are 10--40\,kW against an 80\,kW cap, so $h_2$
+and $h_3$ never bind, and a guard that reserves headroom inside a cap that is
+never approached cannot alter any action. The row is reported rather than
+omitted so that an inactive mechanism is visible as inactive.
+\textbf{Planned work:} exercised under a tightened cap in E5, and to be evaluated
+on a heating-dominated climate where the efficiency term is larger
+(Section~\ref{sec:limitations}, item~4).
+
+\paragraph{Note on the seed spread.} The per-seed standard deviation of readiness
+is exactly $0.000$ throughout. That reflects determinism, not stability: the
+reactive nominal controller is a deterministic function of the observation and
+the scenario seed is fixed in the schema, so both seeds trace the same
+trajectory. These seeds establish reproducibility and say nothing about
+robustness. \textbf{Planned work:} Section~\ref{sec:limitations}, item~5.
+
+\subsection{E5 --- Cold-snap stress}
+\label{sec:exp-stress}
+
+Two corrections to the experimental design were required before the scenario
+tested what it was intended to test, and both are recorded because each is easy
+to get wrong.
+
+\begin{enumerate}[nosep]
+\item \textbf{A constant temperature offset cannot exercise a cold-front term.}
+Equation~\ref{eq:cop-drop} keys on the \emph{difference} between the current and
+forecast efficiency. Shifting the current reading and all of its forecasts by the
+same amount changes the temperature level but leaves that difference essentially
+untouched. The correction is a forecast-only ramp,
+$\hat T_{t+k} \mathrel{+}= \gamma k$ with $\gamma < 0$.
+\item \textbf{The cap must actually bind.} With the battery frozen, mean
+per-building draw is $0.88$\,kW; a 12\,kW cap is no more binding than the nominal
+one. The cap had to be reduced to 2\,kW before $h_2$ engaged at all.
+\end{enumerate}
+
+Both perturbations act on the observation stream rather than on the simulator's
+internal physics, so this scenario probes whether the anticipation logic responds
+correctly to a weather signal; it is not a statement about true energy use in a
+cold snap.
+
+\begin{table}[h]
+\centering
+\caption{E5: cold-snap stress ($-18^\circ$C observed, $-4^\circ$C/h forecast
+front, 2\,kW per-building cap; 1500 steps, seed 0).}
+\label{tab:stress}
+\small
+\begin{tabular}{lccccc}
+\toprule
+Configuration & Readiness & Deficit [kWh] & Cost & DHW \$/kWh & Violation \\
+\midrule
+No pre-heat (reactive) & 0.895 & 1163.5 & 3021.6 & 0.2200 & 0.2402 \\
+\quad $+$ efficiency-aware guard & 0.895 & 1163.5 & \textbf{3008.2} & 0.2200 & 0.2388 \\
+Pre-heat $L=1$ & 0.919 & 734.7 & 3013.1 & 0.2307 & 0.2390 \\
+Pre-heat $L=2$ & 0.961 & 103.2 & 3021.4 & 0.2459 & 0.2390 \\
+Pre-heat $L=3$ & 0.991 & 33.2 & 3028.9 & 0.3127 & 0.2402 \\
+\quad $+$ cold-front anticipation ($L=2$) & 0.986 & 60.2 & 3024.9 & 0.2550 & 0.2390 \\
+\textbf{Full ($L=2$, weather $+$ margin)} & \textbf{0.991} & \textbf{43.5} & 3028.3 & 0.2591 & 0.2390 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Positive result: anticipation is worth more when there is weather to
+anticipate.} Adding the cold-front term at $L=2$ raises readiness from $0.961$ to
+$0.986$ and cuts the deficit by 42\% ($103.2 \to 60.2$\,kWh), a larger gain than
+the same term produced under steady weather. The full configuration matches the
+readiness of $L=3$ while paying 17\% less per kWh ($0.2591$ vs $0.3127$), against
+12\% under nominal conditions.
+
+\paragraph{Positive result: the efficiency-aware guard becomes active.} With the
+cap binding, the second row separates from the first: cost falls 0.44\%
+($3021.6 \to 3008.2$), making it the least expensive configuration in the table,
+because the guard trims conditioning draw hardest exactly when efficiency is
+lowest.
+
+\paragraph{Negative result: the guard cannot repair the constraint.} Its effect
+on the violation rate is negligible ($0.2402 \to 0.2388$), and the reason
+quantifies cleanly. With the battery frozen, the shield commands only the
+hot-water heater and the heat pump, together $366.5$ of $10597.3$\,kWh --
+\textbf{3.5\% of total consumption}. The remaining 96.5\% is non-shiftable load,
+and no thermal action can bring a building under a 2\,kW cap that its baseline
+load already exceeds; roughly 24\% of (timestep, building) pairs violate $h_2$ in
+every configuration because those violations are unavoidable in the sense of
+Section~\ref{sec:reward}. A shield can only be as effective as the fraction of
+load it actually commands. \textbf{Planned work:} re-enable the battery so the
+controlled fraction is large enough for the guard to act on, and evaluate the
+same scenario with vehicles present, where the controllable fraction is far
+larger (Section~\ref{sec:limitations}, item~1).
+
+\subsection{E6 --- Vehicle barrier on real charger data}
+\label{sec:exp-ev}
+
+The vehicle barrier was validated against the shipped CityLearn EV dataset
+before being used, in the same way the tank calibration was checked against the
+real tank.
+
+Measurements: a charger rated 11\,kW at $\eta = 0.95$ serving a 60\,kWh battery
+gives $\rho = 0.174$\,h$^{-1}$, i.e.\ approximately 5.7\,h to fill -- roughly
+three and a half times the hot-water lead time of E3. The test suite asserts
+that every required observation is present; that $\rho$ matches
+$P_{\text{ch}}\eta/C$ read from the live charger object; that a 72-step rollout
+spanning genuine arrivals \emph{and} empty bays leaves the barrier finite,
+in-bounds and inert on empty bays; and that an unreachable departure requirement
+is reported rather than absorbed.
+
+\paragraph{Consequence for the horizon rule.} For hot water the horizon is a
+hyper-parameter validated against a measured time constant. For a vehicle the
+horizon is supplied by the data itself, so Eq.~\ref{eq:horizon-rule} is exercised
+with nothing to tune -- and the longer lead time makes it correspondingly more
+consequential.
+
+\subsection{E7 --- The merged building-and-vehicle environment}
+\label{sec:exp-merged}
+
+The merged schema of Section~\ref{sec:merged-schema} was validated end to end.
+Result: 8 buildings, 6 with chargers, observation dimension 35, action dimension
+4. All control modes resolve, and a single rollout driving the hot-water heater
+and the charger simultaneously moves both stores, confirming that the thermal and
+vehicle sides are live in the same environment. Charging lead times range from
+5.7 to 7.4\,h.
+
+The generator asserts that no thermal observation was lost in the merge and that
+the building data files are referenced, not copied.
+
+\subsection{E8 --- Regression verification}
+\label{sec:exp-regression}
+
+Because the hot-water and heat-pump results are used as a standalone baseline
+elsewhere, every structural change to the code was verified not to move them.
+Two levels of check are applied:
+
+\begin{itemize}[nosep]
+\item \textbf{Operation level.} The pre-refactor hot-water projection is retained
+as a frozen reference function and differenced against the unified barrier over
+200 randomised states $\times$ 3 horizons $\times$ 2 weather settings.
+\item \textbf{End to end.} The complete E4 study is re-run and differenced
+against the stored results after each structural change.
+\end{itemize}
+
+Across three successive refactors -- unifying the barrier, widening the
+environment for heterogeneous buildings, and adding the merged schema -- the
+maximum relative difference is $7.359 \times 10^{-9}$, on the average-daily-peak
+metric, which is the most summation-order-sensitive quantity reported. That
+residual is a one-unit-in-the-last-place \texttt{float32} effect arising from the
+order of summation, and is an order of magnitude below the tolerance already
+present in the readiness comparison. The corresponding test asserts agreement to
+\texttt{float32} precision, not exact equality.
+
+\subsection{E9 --- Coupling sweep with a deadline-locked vehicle fleet}
+\label{sec:exp-coupling}
+
+Sections~\ref{sec:coupled} argued that per-device feasibility does not survive a
+shared connection. This experiment measures that directly on the merged
+environment, and measures what a coordination rule is worth as a function of how
+tightly the shared constraint binds.
+
+\paragraph{Setting.} Six vehicles, 55.2\,kW of aggregate charger capacity, on the
+eight-building merged schema. Measured beforehand: the non-vehicle building load
+alone peaks at $39.6$\,kW; with every vehicle charging on demand the site peaks
+at $71.5$\,kW, and a mean of 4.2 vehicles are connected simultaneously. The
+shared import cap is swept from 80\,kW (slack) to 15\,kW (severely binding).
+
+\paragraph{Arms.} The nominal controller is deliberately uncoordinated: each
+household charges whatever is plugged in, which is what a distribution
+transformer sees when a street electrifies. Three shield configurations are
+compared.
+
+\begin{itemize}[nosep]
+\item \texttt{independent} -- each deadline barrier projects on its own. Correct
+per device, collectively blind to the connection.
+\item \texttt{proportional} -- the shared cap is enforced; every request is scaled
+by the same factor.
+\item \texttt{edf} -- the shared cap is enforced; available power is allocated
+earliest-deadline-first.
+\end{itemize}
+
+The last two enforce an \emph{identical} total, so any difference between them is
+attributable to the priority rule alone. All three necessarily coincide wherever
+the cap is slack, which is what makes a sweep the correct instrument rather than
+a single operating point.
+
+\paragraph{Service metric.} A \emph{missed departure} is a vehicle that
+disconnects with a state of charge below what it required. It is the honest
+service metric here because, unlike a state-of-charge excursion, it cannot be
+repaired by any later action.
+
+\begin{table}[h]
+\centering
+\caption{E9: grid-cap sweep, 1500 steps, 298 departures. \texttt{miss} is missed
+departures; \texttt{viol} is the fraction of steps exceeding the cap.}
+\label{tab:coupling}
+\small
+\begin{tabular}{rccccccc}
+\toprule
+& \multicolumn{2}{c}{\texttt{independent}} & \multicolumn{2}{c}{\texttt{proportional}} & \multicolumn{2}{c}{\texttt{edf}} & EDF gain \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}\cmidrule(lr){6-7}
+Cap [kW] & miss & viol & miss & viol & miss & viol & vs.\ proportional \\
+\midrule
+80 & 3 & 0.000 & 3 & 0.000 & 4 & 0.000 & $-33\%$ \\
+60 & 3 & 0.013 & 1 & 0.000 & 1 & 0.000 & $0\%$ \\
+45 & 3 & 0.065 & 6 & 0.001 & 5 & 0.000 & $+17\%$ \\
+35 & 3 & 0.113 & 20 & 0.009 & \textbf{11} & 0.011 & $\mathbf{+45\%}$ \\
+30 & 3 & 0.142 & 58 & 0.018 & \textbf{34} & 0.023 & $\mathbf{+41\%}$ \\
+25 & 3 & 0.179 & 115 & 0.045 & \textbf{66} & 0.047 & $\mathbf{+43\%}$ \\
+20 & 3 & 0.219 & 170 & 0.099 & \textbf{115} & 0.095 & $\mathbf{+32\%}$ \\
+15 & 3 & 0.273 & 214 & 0.201 & 179 & 0.177 & $+16\%$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\textwidth]{plots/coupling_sweep.png}
+\caption{E9. Left: service failure. Centre: constraint breach. Right: the
+missed departures avoided by earliest-deadline-first relative to proportional
+sharing, at an identical enforced total. The dotted line marks the 39.6\,kW
+non-vehicle baseline peak, below which no vehicle action can bring the site
+under the cap.}
+\label{fig:coupling}
+\end{figure}
+
+\paragraph{Positive result 1: enforcement converts a breach into a scheduling
+problem.} The \texttt{independent} arm never limits anything: it misses only 3 of
+298 departures at every cap, but exceeds the cap in up to 27\% of steps and peaks
+at $73.4$\,kW regardless of what the cap is set to. Enforcing the shared cap
+removes almost all of that breach -- at 35\,kW the violation rate falls from
+$0.113$ to $0.009$ -- and converts it into a scheduling problem, at the cost of
+missed departures. This trade is the substance of the coupled-feasibility
+condition of Eq.~\ref{eq:coupled-feasibility}: when the requirement set cannot be
+met, something must give, and the only choice available is \emph{what}.
+
+\paragraph{Positive result 2: the value of the priority rule is non-monotone in
+coupling tightness.} This is the main finding. Comparing the two arms that
+enforce the same total:
+
+\begin{itemize}[nosep]
+\item At 80 and 60\,kW the cap is slack and the rule is worth nothing.
+\item Between 35 and 20\,kW it avoids 32--45\% of the missed departures that
+proportional sharing incurs, peaking at $+45\%$ (11 misses against 20) at
+35\,kW.
+\item At 15\,kW the advantage falls back to $+16\%$.
+\end{itemize}
+
+The decline at the tight end is as informative as the peak. Once the cap is far
+below what the fleet requires, most deadlines are unreachable under any
+allocation, and a priority rule can only reorder failures rather than prevent
+them. Coordination is therefore most valuable in an intermediate regime: it is
+worthless where the constraint does not bind, and its leverage shrinks again
+where the problem is infeasible for everyone. Reporting a single operating point
+would have supported almost any conclusion one wished to draw.
+
+\paragraph{Negative result: a floor set by the uncontrollable load.} Every
+enforcing arm peaks at exactly $39.6$\,kW for all caps at or below 30\,kW, and
+the residual violation rate rises regardless of the allocation rule. That figure
+is the non-vehicle building load, which the shield does not command. Below it, no
+vehicle action can bring the site under the cap, and the violations are
+unavoidable in the sense of Section~\ref{sec:reward}. This is the same bound
+identified in E5 from a different direction, and it quantifies what any charging
+coordination scheme can and cannot deliver. \textbf{Planned work:} repeat with
+the battery and thermal actuators also under control, which raises the
+controllable fraction substantially and should lower that floor.
+
+\paragraph{Negative result: the headroom estimate is conservative.} At 80\,kW the
+three arms should be identical, because the realised peak of $73.4$\,kW never
+reaches the cap; instead \texttt{edf} records 4 missed departures against 3. The
+cause is that available headroom is computed from the previously observed net
+import, which already contains that step's charging, so the allocator
+occasionally engages when the cap is in fact slack. The effect is small and
+conservative in the safe direction, but it is a modelling artifact rather than a
+property of the system. \textbf{Planned work:} estimate the next-step
+non-controllable load separately from the controllable draw, instead of using the
+previous total as a proxy.
+
+\paragraph{Scope.} This experiment characterises the coupling itself and compares
+\emph{allocation rules inside the safety layer}. It is not a comparison of
+learned coordination architectures: no policy is trained here, and the nominal
+controller is fixed by construction so that the shield's contribution can be
+isolated. Establishing where the shared constraint binds, and by how much, is a
+prerequisite for that comparison -- a learned coordinator evaluated at 80\,kW
+would have nothing to coordinate about -- but it is not a substitute for it. The
+learned comparison is Section~\ref{sec:limitations}, item~1.
+
+% =====================================================================
+\section{Standalone Heat-Pump Operation and Platform Integration}
+\label{sec:standalone}
+% =====================================================================
+
+The hot-water and heat-pump controller is designed to run without the rest of the
+system. This section documents that mode and sets out what integrating it with a
+commercial heat-pump platform would require.
+
+\subsection{Running standalone}
+
+Control is restricted by a named registry mapping a mode to a set of actuators,
+resolved by device name rather than by position:
+$$
+\texttt{ACTION\_GROUPS} \supseteq \Big\{\;\texttt{heatpump}\!:\![\text{heat pump}],\;\;
+\texttt{dhw}\!:\![\text{DHW}],\;\; \texttt{thermal}\!:\![\text{DHW},\ \text{heat pump}] \Big\}.
+$$
+Selecting a mode has two effects:
+\begin{enumerate}[nosep]
+\item \textbf{Actuator masking.} Devices outside the selected set are held at
+their neutral value. For a storage device an action of zero is exactly "neither
+charge nor discharge" (Eq.~\ref{eq:soc-update} with $e = 0$ leaves the state
+governed only by standby loss), so freezing them is physically meaningful rather
+than an arbitrary placeholder.
+\item \textbf{Barrier adaptation.} The battery state-of-charge barrier is
+constructed only when the battery is actually controllable, so it is skipped
+rather than constraining an actuator the controller cannot move. The power
+barriers remain active in every mode, since hot-water and conditioning draw still
+affect the building's import.
+\end{enumerate}
+Requesting a device the installation does not have raises an error rather than
+silently controlling nothing.
+
+In standalone thermal mode the controller therefore consists of: the
+observation encoder, the per-building policy, the hot-water readiness barrier
+$h_4$, the efficiency-aware power guard, and the comfort term with its
+dual-setpoint deadband. No battery, vehicle or neighbourhood coupling is
+required for it to run.
+
+\subsection{What the controller needs from a heat-pump installation}
+
+\begin{table}[h]
+\centering
+\caption{Signals required for standalone thermal control.}
+\label{tab:signals}
+\small
+\begin{tabular}{p{4.6cm}p{3.0cm}p{6.4cm}}
+\toprule
+Quantity & Cadence & Use \\
+\midrule
+Outdoor temperature, plus a 1--3\,h forecast & hourly & CoP model
+(Eq.~\ref{eq:cop}); cold-front term (Eq.~\ref{eq:cop-drop}) \\
+Indoor temperature and setpoints (heating and cooling) & hourly & comfort
+deadband (Eq.~\ref{eq:r-comfort}) \\
+Hot-water tank temperature or state of charge & hourly & barrier state in
+Eq.~\ref{eq:h4} \\
+Hot-water draw (measured or inferred) & hourly & requirement estimator
+(Eq.~\ref{eq:ewma}); only past values are used \\
+Electrical import & hourly & power barriers $h_2, h_3$ \\
+Electricity price, ideally day-ahead & hourly & economic reward term \\
+\midrule
+Compressor rated power, tank capacity, heater rating and efficiency & once, at
+commissioning & calibration of $\rho^{\text{dhw}}$ (Eq.~\ref{eq:dhw-rate}) and of
+the CoP curve \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The control output is a scalar modulation command per actuator in $[-1, 1]$,
+which maps naturally onto an inverter-driven compressor and onto a hot-water
+charge request. On-off equipment would require a duty-cycle or hysteresis layer
+between the barrier output and the device, which is not currently implemented.
+
+\subsection{Integration path for a commercial platform}
+
+Taking a Thermia installation as the concrete case -- ground- or air-source units
+with an inverter-modulating compressor, simultaneous space heating and hot-water
+production, and a remote monitoring service -- integration would proceed in four
+steps.
+
+\paragraph{Step 1: commissioning-time calibration.} The single most consequential
+step, and the lesson of both E1 and E3. The controller must read the installed
+unit's rated compressor power, tank capacity, heater rating and efficiency, and
+compute $\rho^{\text{dhw}}$ and the CoP curve from them. Assuming nominal values
+across an installed base is precisely the error that produced the highest
+violation rates in E1. This is a one-time read per installation.
+
+\paragraph{Step 2: the barrier runs at the edge.} The hot-water barrier
+(Eq.~\ref{eq:h4}) and the power guard (Eq.~\ref{eq:cop-derate}) are analytic and
+per-building; they involve no optimisation solver and no neighbourhood state.
+They can run on the unit controller or a local gateway, at hourly cadence, with
+negligible computation. This matters for deployment: the safety layer does not
+depend on connectivity, and it never returns an undefined action -- the projection
+is feasible by construction, and where a requirement is genuinely unreachable it
+is reported rather than silently approximated.
+
+\paragraph{Step 3: the demand estimator learns per installation.} The requirement
+estimator (Eq.~\ref{eq:ewma}) is an online hour-of-day climatology that needs no
+prior training and no data leaving the property; it converges within a few days
+of observed operation, and during warm-up it falls back to a conservative
+estimate that never under-reports current demand.
+
+\paragraph{Step 4: the policy is optional.} The barrier improves hot-water
+readiness on top of \emph{any} nominal controller -- E4 measured its effect on a
+conventional price-aware reactive controller, not on a learned policy. An
+installation can therefore adopt the safety and anticipation layer alone, with the
+learned policy added later. This staging substantially reduces deployment risk.
+
+\subsection{Recalibration required for a different market}
+
+Three items must be revisited before any claim is made about a heating-dominated
+installed base.
+
+\begin{enumerate}[nosep]
+\item \textbf{Climate.} All measurements in this report come from a
+cooling-dominated Texas dataset. The efficiency mechanisms of
+Section~\ref{sec:weather} were inactive at nominal caps precisely because the
+climate rarely stresses them (E4, negative result 2). Heating-dominated data is
+required, and is the planned next step
+(Section~\ref{sec:limitations}, item~4).
+\item \textbf{Ground-source thermal behaviour.} The CoP model of
+Eq.~\ref{eq:cop} is parameterised by a supply and a source temperature. For a
+ground-source unit the source is the brine circuit, which is far more stable
+hour-to-hour than outdoor air but drifts seasonally, and over long horizons is a
+shared resource between neighbouring installations. Representing that would be a
+change of source-temperature model, not of the barrier.
+\item \textbf{Periodic disinfection.} A thermal disinfection cycle is a hard,
+periodic, regulated requirement that conflicts directly with efficiency, since
+the elevated tank temperature it needs is expensive to reach. It maps onto the
+deadline barrier of Section~\ref{sec:deadline} without modification: a required
+state that must be met within a bounded window, at a finite heating rate. This is
+a natural extension of the existing mechanism and is listed in
+Section~\ref{sec:limitations}, item~7.
+\end{enumerate}
+
+% =====================================================================
+\section{Defects Found and Corrected}
+\label{sec:defects}
+% =====================================================================
+
+Four defects were found during this work. All four are now covered by regression
+tests. They are recorded here because each one silently affected measurements
+until it was found.
+
+\paragraph{D1 --- The hot-water actuator was inert.} CityLearn's storage update
+for domestic hot water scales the requested energy by the \emph{heating} storage
+tank's capacity rather than the hot-water tank's. The building schema used here
+has no heating storage tank, so that capacity is zero and every hot-water action
+resolved to zero energy. Verified directly: commanding a charge action of $0.8$
+for eight consecutive steps left the tank state of charge at exactly $0.0$. The
+correction is applied per building, only where the defect is present, announced
+by a banner and recorded in the run metadata, with an explicit opt-out. All
+device-level hot-water readings taken before this correction are invalid; the
+affected runs are identified in Section~\ref{sec:exp-converged}.
+
+\paragraph{D2 --- Vehicle departure time misread as a clock hour.} The charger
+schedule field is documented as a countdown in timesteps and the shipped data
+files decrement it towards zero. An initial implementation of the vehicle barrier
+treated it as an absolute hour and performed clock arithmetic on it, which would
+have produced incorrect deadlines at every bay. The field is now used directly.
+The associated required-state field is stored as a percentage and normalised on
+load.
+
+\paragraph{D3 --- Departure countdown truncated one step early.} The reference
+data keeps a vehicle parked while the countdown reaches zero, so the departure
+hour itself is a final charging opportunity. The schedule generator initially
+stopped one step earlier, silently removing it.
+
+\paragraph{D4 --- State-of-charge metric scored on a frozen battery.} Under
+thermal-only control the reported state-of-charge violation rate was pinned at
+$1.0$, because the metric scored the frozen, uncontrolled battery against its
+band. The metric is now conditioned on whether the battery is actually
+controllable; the affected mode moved from $1.0$ to $0.0$.
+
+% =====================================================================
+\section{Limitations and Planned Work}
+\label{sec:limitations}
+% =====================================================================
+
+Each item states an observed limitation and the specific work intended to address
+it. The ordering reflects how much each would strengthen the conclusions.
+
+\begin{enumerate}
+\item \textbf{Learned coordination has not yet been compared.} E9 measured the
+shared constraint and compared allocation rules \emph{inside} the safety layer,
+establishing that the useful operating regime is roughly 20--45\,kW on this
+fleet. It did not train anything. \emph{Planned:} with that regime now known,
+compare centralised-critic and fully decentralised training across the same
+sweep, which is the comparison E9 was built to make possible. Evaluating such a
+comparison at a slack cap would measure nothing, which is why the sweep came
+first.
+
+\item \textbf{The controllable fraction of load bounds every result.} E5 measured
+the shield commanding 3.5\% of consumption under thermal-only control; E9 found
+a hard floor at the 39.6\,kW non-vehicle baseline. \emph{Planned:} run both with
+the battery and the thermal actuators under control simultaneously, which is the
+only way to raise that fraction.
+
+\item \textbf{Thermal results predate the hot-water correction.} The converged
+run of E2 and the earlier control-mode validation drove an inert hot-water
+actuator (defect D1), so they stand as heat-pump-only results. \emph{Planned:}
+re-run both to convergence on the corrected environment to obtain a genuine joint
+hot-water and heat-pump result.
+
+\item \textbf{Readiness is bought at a cost premium.} E4 measured a 0.6\%
+increase in total cost and a rise from $0.2200$ to $0.2571$ in the price paid per
+kWh of hot-water heating, because the barrier heats as late as the constraint
+allows and is driven by demand rather than price. \emph{Planned:} choose the
+heating instant \emph{within} the available horizon rather than at its end,
+selecting the least expensive feasible hour. Vehicles are the natural first
+application, because their deadlines leave positive slack whereas hot water does
+not.
+
+\item \textbf{Only one climate has been evaluated.} Every measurement here is
+from a cooling-dominated dataset, which is why the efficiency-aware mechanisms
+were inactive at nominal caps. \emph{Planned:} repeat E4 and E5 on the
+heating-dominated datasets available in the simulator, where the coefficient of
+performance varies over a much wider range and the cold-front term should carry
+more information.
+
+\item \textbf{Reported spreads are not uncertainty estimates.} The per-seed
+standard deviation is exactly zero because the nominal controller is
+deterministic and the scenario seed is fixed. \emph{Planned:} vary the stochastic
+policy seed, the weather year and the building subset, and report confidence
+intervals and paired comparisons instead of raw spreads.
+
+\item \textbf{Comparative evaluation is incomplete.} The evaluation path
+currently scores against a single rule-based reference, while several other
+controllers are implemented but unused. \emph{Planned:} calibrate every one of
+them from the live device parameters before use -- one of them presently carries
+the same uniform rate assumption identified in E1 -- and report the full metric
+table. Calibrating the comparators is a precondition, not an optimisation.
+
+\item \textbf{Periodic disinfection is not yet modelled.} A regulated thermal
+disinfection cycle is a deadline constraint of exactly the form already
+implemented. \emph{Planned:} add it as a further instance of the deadline
+barrier, with the requirement window as the deadline and the elevated tank
+temperature as the required state.
+
+\item \textbf{Vehicle-to-grid capability is unused.} The merged schema is
+already discharge-capable at 7.2\,kW. \emph{Planned:} enable bidirectional
+operation, which converts a vehicle from a purely constraining load into a
+flexibility source and changes the structure of the coupled feasibility condition
+in Eq.~\ref{eq:coupled-feasibility}.
+
+\item \textbf{Engineering hygiene.} The project lacks packaging, continuous
+integration and a container definition, and the requirement estimator's per-step
+loop dominates study runtime. \emph{Planned:} package the project, add automated
+test execution, and vectorise the estimator.
+\end{enumerate}
+
+% =====================================================================
+\section{Summary}
+\label{sec:summary}
+% =====================================================================
+
+This report records a reimplementation of the STEMS architecture on real
+building data and the extensions built on it. The recurring technical theme is
+that \emph{actuator dynamics must be measured from the plant rather than
+assumed}, and that anticipatory safety horizons must be derived from those
+measurements: a uniform state-of-charge rate left a 9.45\% violation rate with
+the shield active (E1), while per-building calibration and the associated margins
+reduced the measured rate to zero at no cost penalty; the same principle applied
+to hot water produced an 86\% reduction in energy deficit at exactly the horizon
+the measured 1.60\,h time-to-heat predicts (E4).
+
+The safety layer was then generalised: the hot-water tank, the vehicle battery
+and the electrical battery are one object -- a store that must reach a required
+state by a deadline at a finite rate -- and are implemented once
+(Section~\ref{sec:deadline}). That generalisation also exposed the limit of the
+guarantee: individual barriers are feasible by construction, but coupled
+deadlines under a shared cap can render the safe set empty
+(Eq.~\ref{eq:coupled-feasibility}), which the implementation detects and reports
+rather than absorbing.
+
+The thermal controller runs standalone and is deployable independently of the
+rest of the system: its barrier is analytic, per-building, solver-free and
+requires no neighbourhood state, and its demand estimator learns on-site from
+observed operation (Section~\ref{sec:standalone}).
+
+Where mechanisms were inactive or improvements came at a cost, the measurements
+are reported as observed and paired with the specific work planned to address
+them (Section~\ref{sec:limitations}). Four defects found during the work are
+documented in Section~\ref{sec:defects}; all are covered by regression tests, and
+the results they invalidated are identified in place.
+
+\begin{thebibliography}{9}
+\bibitem{stems2025}
+Zhang, X., Wu, J., Zinflou, A., \& Boulet, B. (2025).
+\textit{STEMS: Spatial-Temporal Enhanced Multi-Agent Safe Building Energy Management System.}
+IEEE Internet of Things Journal. arXiv:2510.14112v2.
+\end{thebibliography}
+
+\end{document}

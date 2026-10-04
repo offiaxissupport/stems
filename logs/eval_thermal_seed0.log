@@ -1,0 +1,14 @@
+[eval] env_type=CityLearn B=8 obs_dim=30 isolate=thermal control_indices=[0, 2] checkpoint=checkpoints/isolate_thermal_seed0
+
+Table I (metrics 1-5 normalised to RuleBased=1.0; lower is better)
+metric                        RuleBased        STEMS   STEMS/RB
+cost                         34008.8828   15219.8730      0.448
+emission                     21071.7070    8688.9990      0.412
+avg_daily_peak                  36.7793      16.4708      0.448
+electricity_consumption     142816.6094   55219.7539      0.387
+ramping_rate                     6.3679       4.8043      0.754
+discomfort_rate                  0.0001       0.0001          -
+safety_violation_rate            0.6465       0.0000          -
+
+STEMS safety_violation_rate = 0.0000 (paper STEMS 0.056; RuleBased here 0.6465)
+[eval] wrote checkpoints/isolate_thermal_seed0/evaluation.json
