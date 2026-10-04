@@ -160,12 +160,13 @@ def test_the_ablation_arms():
         "rbc-offpeak+calibrated": ("rbc", "calibrated"),
         "rbc-never+calibrated": ("rbc", "calibrated"),
         "rl+calibrated+own": ("rl", "calibrated"),
+        "rl+calibrated+floor": ("rl", "calibrated"),
         "hp-shift": ("hp-shift", "none"),
         "rl-hp": ("rl", "none"),
     }
     assert [n for n, a in ARMS.items() if a.learns] == [
         "rl", "rl+basic", "rl+calibrated", "rl-res+calibrated", "rl+calibrated+pen",
-        "rl+calibrated+own", "rl-hp"]
+        "rl+calibrated+own", "rl+calibrated+floor", "rl-hp"]
     assert ARMS["rl-res+calibrated"].residual and ARMS["rl+calibrated+pen"].penalty > 0
     assert ARMS["rl+calibrated+own"].forced_penalty > 0 and ARMS["rl+calibrated"].forced_penalty == 0
     assert ARMS["rl-hp"].control == ("cooling_or_heating_device",)
@@ -301,6 +302,27 @@ def test_heat_pump_only_policy_drives_the_heat_pump_and_nothing_else(mock_env):
     a = agent.select_action(obs, hist.get(), explore=True)
     others = [i for i in range(mock_env.action_dim) if i != hvac]
     assert np.all(a[:, others] == 0.0)
+
+
+def test_charger_floor_holds_the_request_up_and_touches_nothing_else():
+    from experiments.controllers import ChargerFloor
+
+    layout = {"connected_state": 0, "soc": 4, "required_soc_departure": 2, "departure_time": 3}
+
+    def obs(hour, connected=1.0):
+        o = np.zeros(30)
+        o[0], o[1], o[2], o[3] = connected, hour, 0.8, 5.0
+        return [o]
+    floor = ChargerFloor(action_dim=4, ev_index=3, layout=layout, fraction=0.5)
+    assert floor(obs(23)).tolist() == [[-1.0, -1.0, -1.0, 0.5]]     # off-peak, car short
+    assert floor(obs(18)).tolist() == [[-1.0, -1.0, -1.0, 0.0]]     # tariff peak: no floor
+    assert floor(obs(23, connected=0.0))[0, 3] == 0.0               # no car
+    asked = np.array([[-0.7, 0.2, 0.9, -1.0]], dtype=np.float32)    # a policy that refuses to charge
+    assert np.maximum(asked, floor(obs(23)))[0] == pytest.approx([-0.7, 0.2, 0.9, 0.5])
+    keen = np.array([[0.0, 0.0, 0.0, 0.9]], dtype=np.float32)
+    assert np.maximum(keen, floor(obs(23)))[0, 3] == pytest.approx(0.9)   # asking for more is the policy's
+    with pytest.raises(ValueError):
+        ChargerFloor(4, 3, layout, fraction=0.0)
 
 
 def test_car_request_modes_of_the_rule():

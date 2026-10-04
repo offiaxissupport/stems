@@ -244,6 +244,11 @@ class STEMSAgent:
         # turns the requested charging into charging that fits the shared cap and
         # keeps the departure deadlines. Applied after the per-device barriers.
         self.fleet_shield = None
+        # Optional floor under what the policy asks for: a callable giving, per
+        # building and actuator, the least request that reaches the shields (-1
+        # where there is none). Like the shields it is part of the environment
+        # the policy is trained in. See experiments.controllers.ChargerFloor.
+        self.request_floor = None
         if self.base_policy is not None:
             for actor in self.actors:
                 actor.set_initial_log_std(self.cfg.training.residual_log_std)
@@ -285,6 +290,8 @@ class STEMSAgent:
             nominal = np.clip(base + self.cfg.training.residual_scale * raw, -1.0, 1.0)
         else:
             nominal = raw
+        if self.request_floor is not None:
+            nominal = np.maximum(nominal, np.asarray(self.request_floor(obs_list), dtype=np.float32))
         self._last_nominal_actions = nominal.copy()
         safe = self.cbf.project(nominal, obs_list) if self.use_cbf else nominal.copy()
         safe = np.clip(safe, -1.0, 1.0).astype(np.float32)

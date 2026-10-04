@@ -47,16 +47,18 @@ import numpy as np
 
 UNCALIBRATED_SOC_RATE = 0.1   # the uniform constant of the original implementation
 
-# The cap shield of the controllers (``stems.fleet.FleetShield``): the later hours
-# of its plan are held to the day-ahead forecast's own error margin, and no
-# departure is planned early on top of that. Chosen on the winter *training*
-# window with a controller that never asks to charge (the hardest case for the
-# shield; second week scored, first week as forecast history), by fewest missed
-# departures and then cost:
-#     reserve 0 / 1 / 2 h, one-hour margin only:   8 / 4 / 1 of 33 missed
-#     reserve 0 / 1 / 2 h, with the later margin:  0 / 0 / 0 missed, cost 521.7 / 525.4 / 529.5
-# The evaluation windows were not used. See docs/REPORT_2026-10.md, 6.8.
-RESERVE_HOURS = 0
+# The cap shield of the controllers (``stems.fleet.FleetShield``): every departure
+# is planned one hour early, and the later hours of its plan are held to the
+# day-ahead forecast's own error margin. Chosen on the winter and summer
+# *training* windows with a controller that never asks to charge (the hardest
+# case for the shield; second week scored, first week as forecast history), by
+# fewest missed departures and then cost. Missed of 66 (winter + summer):
+#     reserve 0 / 1 / 2 h, one-hour margin only:   16 / 4 / 1
+#     reserve 0 / 1 / 2 h, with the later margin:   2 / 0 / 0   (cost 1015 at 1 h, 1024 at 2 h)
+# With cars that ask off-peak no setting misses a departure. The evaluation
+# windows were not used for the choice -- and on them it does not make a
+# controller that never asks safe: see docs/REPORT_2026-10.md, 6.8.
+RESERVE_HOURS = 1
 LEAD_MARGIN = True
 
 RBC_ACTIONS = ["dhw_storage", "electrical_storage", "cooling_or_heating_device"]
@@ -71,6 +73,7 @@ class Arm:
     penalty: float = 0.0       # rl only: weight of the shield-intervention penalty
     ev_request: str = "asap"   # rbc on a schema with chargers: "asap" | "offpeak" | "never"
     forced_penalty: float = 0.0   # rl only: reward lost per kWh of charging the shield forces
+    ev_floor: float = 0.0      # rl only: least share of the off-peak default the charger is asked for
     control: Optional[Tuple[str, ...]] = None   # rl only: the actuators it drives (None: all)
 
     @property
@@ -93,6 +96,9 @@ ARMS: Dict[str, Arm] = {a.name: a for a in (
     Arm("rbc-never+calibrated", "rbc", "calibrated", ev_request="never"),
     # The policy pays the off-peak tariff again for every kWh the shield forces.
     Arm("rl+calibrated+own", "rl", "calibrated", forced_penalty=0.22),
+    # The policy may ask the charger for more than the off-peak default, never
+    # for less than half of it: it cannot leave the cars to the shield.
+    Arm("rl+calibrated+floor", "rl", "calibrated", ev_floor=0.5),
     # Heat-pump-only control.
     Arm("hp-shift", "hp-shift", "none"),
     Arm("rl-hp", "rl", "none", control=("cooling_or_heating_device",)),
@@ -133,6 +139,31 @@ class EVRule:
             short = np.zeros_like(short)
         a[:, self.ev_index] = np.where(short, 1.0, 0.0)
         return a
+
+
+class ChargerFloor:
+    """The least the charger is asked for, whatever the policy outputs.
+
+    ``fraction`` of full power whenever a connected car is short of its
+    requirement and the tariff is off-peak (the ``offpeak`` request of
+    ``EVRule``); no floor on any other actuator. A policy behind a deadline
+    shield pays nothing for never charging a car -- the shield charges it at the
+    last feasible moment, which is the cheapest and, without foresight, not safe.
+    With the floor the policy can ask for more or earlier, not for less, so the
+    shield is left with corrections rather than with the whole job.
+    """
+
+    def __init__(self, action_dim: int, ev_index: int, layout: Dict[str, int],
+                 fraction: float) -> None:
+        if not 0.0 < fraction <= 1.0:
+            raise ValueError(f"fraction must be in (0, 1], got {fraction}")
+        self.rule = EVRule(None, action_dim, ev_index, layout, ev_request="offpeak")
+        self.ev_index, self.fraction = ev_index, float(fraction)
+
+    def __call__(self, obs_list) -> np.ndarray:
+        floor = np.full((len(obs_list), self.rule.action_dim), -1.0, dtype=np.float32)
+        floor[:, self.ev_index] = self.fraction * self.rule.select_action(obs_list)[:, self.ev_index]
+        return floor
 
 
 class SetpointShiftPolicy:
@@ -309,6 +340,9 @@ def build_controller(arm: Arm, env, config):
                            battery_model=battery_model or env.battery_model(),
                            base_policy=rule() if arm.residual else None)
         agent.fleet_shield = fleet(agent.cbf)
+        if arm.ev_floor and ev_indices:
+            agent.request_floor = ChargerFloor(env.action_dim, ev_indices[0],
+                                               env.ev_obs_layout()[0], arm.ev_floor)
         return agent
 
     if arm.policy == "idle":
