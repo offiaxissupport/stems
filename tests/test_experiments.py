@@ -347,6 +347,8 @@ def test_scenario_records_what_the_schema_lacks():
     assert plain.heat_pump and not plain.allow_missing_obs
     mixed = Scenario(schema="citylearn_schemas/cl2020_zone1/schema.json", heat_pump=False,
                      allow_missing_obs=True, hvac_control="power")
+    from dataclasses import asdict
+
     d = asdict(mixed)
     assert d["heat_pump"] is False and d["allow_missing_obs"] is True
     assert mixed.key.startswith("cl2020_zone1__") and mixed.key.endswith("__power")
