@@ -214,8 +214,10 @@ def train(agent, env, config, episodes: int, log: Callable[[str], None],
     from stems.utils import EpisodeBuffer, HistoryBuffer
 
     B, cbf = env.num_buildings, config.cbf
+    ev_layouts = [] if env.using_mock else env.ev_obs_layout()
     reward_fn = STEMSReward(config.reward, B, cbf.P_grid_max, cbf.P_building_max,
-                            heating_setpoint_idx=env.heating_setpoint_idx)
+                            heating_setpoint_idx=env.heating_setpoint_idx,
+                            ev_layout=ev_layouts[0] if ev_layouts else None)
     buffer = EpisodeBuffer()
     hist = HistoryBuffer(B, env.obs_dim, config.transformer.window_size)
     curve: List[Dict[str, Any]] = []
@@ -226,6 +228,8 @@ def train(agent, env, config, episodes: int, log: Callable[[str], None],
         hist.reset()
         hist.update(obs)
         buffer.reset()
+        if hasattr(getattr(agent, "base_policy", None), "reset"):
+            agent.base_policy.reset()
         prev_net = [float(o[_IDX_NET]) for o in obs]
         ep_reward, n, violating, done = 0.0, 0, 0, False
 
@@ -233,12 +237,16 @@ def train(agent, env, config, episodes: int, log: Callable[[str], None],
             window = hist.get()
             actions = agent.select_action(obs, window, explore=True)
             nxt, _, term, trunc, _ = env.step(actions)
-            agent.observe(nxt)
+            agent.observe(nxt, env.ev_draw_kwh)
             n += 1
             done = bool(term or trunc) or n >= max_steps
 
             rewards = reward_fn.compute(obs, actions, nxt, prev_net)
             prev_net = [float(o[_IDX_NET]) for o in nxt]
+            if config.training.intervention_penalty:
+                moved = ((agent._last_nominal_actions - agent._last_safe_actions) ** 2).sum(axis=1)
+                rewards = [r - config.training.intervention_penalty * float(m)
+                           for r, m in zip(rewards, moved)]
 
             soc = np.array([o[_IDX_SOC] for o in nxt], dtype=np.float32)
             net = np.array([o[_IDX_NET] for o in nxt], dtype=np.float32)
@@ -288,18 +296,24 @@ def evaluate(controller, env, config, max_steps: int) -> Dict[str, Any]:
                                 count_soc=True, hvac_idx=env.hvac_action_index)
     evidence = ActuatorEvidence(env)
     hist = HistoryBuffer(B, env.obs_dim, config.transformer.window_size)
+    has_ev = not env.using_mock and bool(env.ev_action_indices())
 
     obs, _ = env.reset()
     hist.update(obs)
     n, done = 0, False
     while not done:
         actions = controller.select_action(obs, hist.get(), explore=False)
-        raw = getattr(controller, "_last_raw_actions", None)
+        # What the controller asked for before its shield (in residual mode: the
+        # rule plus the learned correction), for the intervention KPIs.
+        raw = getattr(controller, "_last_nominal_actions",
+                      getattr(controller, "_last_raw_actions", None))
         nxt, _, term, trunc, _ = env.step(actions)
         if hasattr(controller, "observe"):
-            controller.observe(nxt)
+            controller.observe(nxt, env.ev_draw_kwh)
         executed = env.executed_actions
         metrics.add_step(obs, actions, nxt, raw_actions=raw, device_actions=executed)
+        if has_ev:
+            metrics.add_ev_departures(env.ev_departures)
         evidence.add(obs, executed, nxt)
         hist.update(nxt)
         obs = nxt

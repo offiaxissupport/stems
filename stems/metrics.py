@@ -147,6 +147,7 @@ class MetricsCalculator:
         self._ev_departures = 0
         self._ev_missed = 0
         self._ev_shortfall_kwh = 0.0
+        self._ev_events: Optional[List[Dict[str, float]]] = None   # ground-truth departures
 
     # ------------------------------------------------------------------
     def add_step(
@@ -220,6 +221,19 @@ class MetricsCalculator:
             stored = r["soc"] * self.dhw_barrier.dyn.capacity
             self._dhw_draw_list.append(demand)
             self._dhw_cover_list.append((stored + 1e-9 >= demand).astype(np.float32))
+
+    def add_ev_departures(self, events: List[Dict[str, float]]) -> None:
+        """Record vehicles that left this step, from ``STEMSEnvironment.ev_departures``.
+
+        These carry the state of charge the vehicle actually left with, including
+        the charge of its last connected hour, which no observation shows. Once
+        this is called, the EV KPIs are computed from these records instead of the
+        observation-based estimate (which ignores that hour and so over-counts
+        misses).
+        """
+        if self._ev_events is None:
+            self._ev_events = []
+        self._ev_events.extend(dict(e) for e in events)
 
     # ------------------------------------------------------------------
     def compute_all(
@@ -425,7 +439,16 @@ class MetricsCalculator:
                           0.0)
         result["discomfort_rate_worst_building"] = float(disc_b.max())
 
-        if self.ev_layout is not None:
+        if self._ev_events is not None:
+            short = np.array([max(e["required_soc"] - e["soc"], 0.0) for e in self._ev_events])
+            kwh = np.array([s * e["capacity_kwh"] for s, e in zip(short, self._ev_events)])
+            n = len(self._ev_events)
+            result["ev_departures"] = float(n)
+            result["ev_missed_departures"] = float((short > _EV_TOL).sum())
+            result["ev_missed_departure_rate"] = (float((short > _EV_TOL).mean()) if n
+                                                  else float("nan"))
+            result["ev_energy_shortfall_kwh"] = float(kwh.sum())
+        elif self.ev_layout is not None:
             result["ev_departures"] = float(self._ev_departures)
             result["ev_missed_departures"] = float(self._ev_missed)
             result["ev_missed_departure_rate"] = (

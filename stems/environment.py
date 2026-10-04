@@ -1052,6 +1052,54 @@ class STEMSEnvironment:
         return {"max_charging_power": power, "efficiency": eff,
                 "charger_ids": self._charger_ids}
 
+    def ev_fleet_model(self, slot: int = 0):
+        """The chargers' and vehicles' one-step dynamics (``stems.fleet.EVFleetModel``),
+        built from the live simulator."""
+        from stems.fleet import EVFleetModel
+
+        if self._mock or self._ev_slots == 0:
+            raise RuntimeError("this environment has no EV chargers")
+        return EVFleetModel.from_citylearn(self._env, slot)
+
+    @property
+    def ev_draw_kwh(self) -> np.ndarray:
+        """(B,) grid-side energy each building's chargers took in the last step,
+        from the simulator's own series."""
+        return self._ev_draw_kwh.copy()
+
+    @property
+    def ev_departures(self) -> List[Dict[str, float]]:
+        """Vehicles that left at the end of the last step.
+
+        Each entry: ``building``, ``soc`` (the state of charge it left with,
+        after that hour's charging), ``required_soc`` and ``capacity_kwh``. The
+        charge delivered in a vehicle's last connected hour never appears in an
+        observation -- the next one already shows an empty bay -- so a departure
+        scored from observations ignores that hour; this is the simulator's own
+        record of it.
+        """
+        return [dict(d) for d in self._ev_departures]
+
+    def _record_ev_step(self, t: int) -> None:
+        """Read charger draw and departures for hour ``t`` from the simulator."""
+        self._ev_draw_kwh = np.zeros(self._num_buildings, dtype=np.float32)
+        self._ev_departures = []
+        if self._mock or self._ev_slots == 0:
+            return
+        vehicles = {ev.name: ev for ev in self._env.electric_vehicles}
+        for b, bld in enumerate(self._env.buildings):
+            for charger in (getattr(bld, "electric_vehicle_chargers", None) or []):
+                self._ev_draw_kwh[b] += float(charger.electricity_consumption[t])
+                sim = charger.charger_simulation
+                state = np.asarray(sim.electric_vehicle_charger_state)
+                if t + 1 >= len(state) or state[t] != 1 or state[t + 1] == 1:
+                    continue
+                ev = vehicles[str(np.asarray(sim.electric_vehicle_id)[t])]
+                self._ev_departures.append({
+                    "building": b, "soc": float(ev.battery.soc[t]),
+                    "required_soc": float(np.asarray(sim.electric_vehicle_required_soc_departure)[t]),
+                    "capacity_kwh": float(ev.battery.capacity)})
+
     def dhw_info(self) -> Dict[str, np.ndarray]:
         """Return per-building DHW tank/heater parameters."""
         return {k: v.copy() for k, v in self._dhw_info.items()}
@@ -1177,6 +1225,8 @@ class STEMSEnvironment:
         self._last_obs = obs
         self._hvac_u = np.zeros(self._num_buildings, dtype=np.float32)
         self._executed_actions = np.zeros((self._num_buildings, self._action_dim), dtype=np.float32)
+        self._ev_draw_kwh = np.zeros(self._num_buildings, dtype=np.float32)
+        self._ev_departures = []
         return obs, info
 
     def step(self, actions: np.ndarray):
@@ -1202,6 +1252,8 @@ class STEMSEnvironment:
         obs_list = self._extract_obs([np.asarray(o, dtype=np.float32) for o in obs_list])
         if t_applied is not None and self._patch_endogenous:
             self._read_simulated_hour(obs_list, t_applied)
+        if t_applied is not None:
+            self._record_ev_step(t_applied)
         self._last_obs = obs_list
         rewards = [float(r) for r in rewards]
         if self._comm_dropout > 0.0:

@@ -180,6 +180,23 @@ class TrainingConfig:
     #             the paper's formulation.
     actor_target: str = "raw"
 
+    # Residual policy (Silver et al. 2018). When the agent is given a base
+    # controller, the policy's action a in (-1, 1) is a correction on it:
+    # nominal = clip(base(obs) + residual_scale * a). A fresh actor outputs a
+    # mean near zero, so the untrained deterministic policy IS the base
+    # controller and learning starts from its performance instead of from
+    # nothing. ``residual_log_std`` is the initial exploration scale of such an
+    # actor: sigma = exp(-1.2) = 0.3, small enough that early episodes stay close
+    # to the base controller.
+    residual_scale: float = 0.5
+    residual_log_std: float = -1.2
+
+    # Penalty on shield interventions (Krasowski et al. 2023; Markgraf et al.
+    # 2025): w * ||nominal - executed||^2 is subtracted from the reward of the
+    # building whose action the shield changed, so a policy cannot rely on the
+    # shield for free. 0 switches it off.
+    intervention_penalty: float = 0.0
+
 
 @dataclass
 class LagrangianConfig:

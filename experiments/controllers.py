@@ -6,7 +6,9 @@ Policies
     ``idle``  no storage action and a zero set-point offset: the house runs on its
               thermostat alone. This is the no-control reference.
     ``rbc``   the time-of-use storage rule of ``stems.baselines.RuleBasedAgent``.
-    ``rl``    the learned policy (``stems.agent.STEMSAgent``).
+    ``rl``    the learned policy (``stems.agent.STEMSAgent``). ``rl-res`` arms learn
+              a bounded correction on the ``rbc`` rule (residual policy learning);
+              ``+pen`` arms pay for every shield intervention.
 
 Safety layers (the state-of-charge barrier; the grid and building power caps of
 the default scenario never bind, so they are not what these arms differ in)
@@ -42,6 +44,8 @@ class Arm:
     name: str
     policy: str    # "idle" | "rbc" | "rl"
     barrier: str   # "none" | "basic" | "calibrated"
+    residual: bool = False     # rl only: the policy corrects the time-of-use rule
+    penalty: float = 0.0       # rl only: weight of the shield-intervention penalty
 
     @property
     def learns(self) -> bool:
@@ -56,7 +60,37 @@ ARMS: Dict[str, Arm] = {a.name: a for a in (
     Arm("rl", "rl", "none"),
     Arm("rl+basic", "rl", "basic"),
     Arm("rl+calibrated", "rl", "calibrated"),
+    Arm("rl-res+calibrated", "rl", "calibrated", residual=True),
+    Arm("rl+calibrated+pen", "rl", "calibrated", penalty=1.0),
 )}
+
+
+class EVRule:
+    """A house rule plus "charge the car whenever it is plugged in and short".
+
+    The uncoordinated behaviour a street of chargers has by default: each house
+    asks for full power for its own vehicle, with no view of the shared cap.
+    """
+
+    def __init__(self, house, action_dim: int, ev_index: int, layout: Dict[str, int]) -> None:
+        self.house, self.action_dim, self.ev_index, self.layout = house, action_dim, ev_index, layout
+
+    def reset(self) -> None:
+        if hasattr(self.house, "reset"):
+            self.house.reset()
+
+    def notify_executed(self, executed: np.ndarray) -> None:
+        if hasattr(self.house, "notify_executed"):
+            self.house.notify_executed(executed)
+
+    def select_action(self, obs_list, history=None, explore: bool = False) -> np.ndarray:
+        a = np.zeros((len(obs_list), self.action_dim), dtype=np.float32)
+        if self.house is not None:
+            a[:, :3] = self.house.select_action(obs_list, history, explore)
+        col = lambda key: np.array([float(o[self.layout[key]]) for o in obs_list])
+        short = (col("connected_state") > 0.5) & (col("soc") < col("required_soc_departure"))
+        a[:, self.ev_index] = np.where(short, 1.0, 0.0)
+        return a
 
 
 class IdlePolicy:
@@ -86,7 +120,7 @@ class PlainController:
         self._last_raw_actions, self._last_safe_actions = a.copy(), a.copy()
         return a
 
-    def observe(self, next_obs_list) -> None:
+    def observe(self, next_obs_list, ev_draw_kwh=None) -> None:
         return None
 
     def save(self, path: str) -> None:
@@ -99,24 +133,29 @@ class PlainController:
 class ShieldedController(PlainController):
     """A non-learning controller whose actions pass through a safety shield."""
 
-    def __init__(self, base, shield, dhw_barrier=None) -> None:
+    def __init__(self, base, shield, dhw_barrier=None, fleet_shield=None) -> None:
         super().__init__(base)
         self.shield = shield
         self.dhw_barrier = dhw_barrier
+        self.fleet_shield = fleet_shield
 
     def select_action(self, obs_list, history=None, explore: bool = False) -> np.ndarray:
         raw = self._base_action(obs_list, history, explore)
         safe = np.clip(self.shield.project(raw, obs_list), -1.0, 1.0).astype(np.float32)
+        if self.fleet_shield is not None:
+            safe = self.fleet_shield.project(safe, obs_list)
         self._last_raw_actions, self._last_safe_actions = raw.copy(), safe.copy()
         if hasattr(self.base, "notify_executed"):
             self.base.notify_executed(safe)      # anti-windup for a stateful base
         return safe
 
-    def observe(self, next_obs_list) -> None:
+    def observe(self, next_obs_list, ev_draw_kwh=None) -> None:
         # The hot-water requirement is estimated online; it must see every step.
         forecaster = getattr(self.dhw_barrier, "forecaster", None)
         if forecaster is not None:
             forecaster.update(next_obs_list)
+        if self.fleet_shield is not None and ev_draw_kwh is not None:
+            self.fleet_shield.observe(next_obs_list, ev_draw_kwh)
 
 
 def safety_layer(barrier: str, env):
@@ -146,23 +185,46 @@ def build_controller(arm: Arm, env, config):
     config.safety = safety
     battery = env.battery_info()
 
+    ev_indices = [] if env.using_mock else env.ev_action_indices()
+
+    def rule():
+        if list(env.action_names)[:3] != RBC_ACTIONS:
+            raise RuntimeError(f"RuleBasedAgent assumes actions {RBC_ACTIONS}; "
+                               f"this environment has {env.action_names}")
+        house = RuleBasedAgent(num_buildings=B, hvac_control=env.hvac_control,
+                               battery_nominal_power=battery["nominal_power"])
+        if not ev_indices:
+            return house
+        return EVRule(house, env.action_dim, ev_indices[0], env.ev_obs_layout()[0])
+
+    def fleet():
+        """The EV fleet shield of a shielded arm on a schema with chargers: the
+        joint-feasibility programme under the scenario's grid cap, with a causal
+        load forecast (a learning controller changes the load it must fit around)."""
+        if not ev_indices or arm.barrier == "none":
+            return None
+        from stems.fleet import BaseLoadForecaster, FleetShield
+
+        return FleetShield(env.ev_fleet_model(), env.ev_obs_layout()[0], ev_indices[0],
+                           config.cbf.P_grid_max, "lp", BaseLoadForecaster(B), reserve_hours=1)
+
     if arm.policy == "rl":
         info = env.get_building_info()
         graph = BuildingGraph(B, info["positions"], info["features"], config.graph)
-        return STEMSAgent(env.obs_dim, env.action_dim, B, graph, config=config,
-                          battery_info=battery, use_cbf=arm.barrier != "none",
-                          electrical_storage_action_index=env.electrical_storage_action_index,
-                          control_indices=None, hvac_action_index=env.hvac_action_index,
-                          battery_model=battery_model or env.battery_model())
+        config.training.intervention_penalty = float(arm.penalty)
+        agent = STEMSAgent(env.obs_dim, env.action_dim, B, graph, config=config,
+                           battery_info=battery, use_cbf=arm.barrier != "none",
+                           electrical_storage_action_index=env.electrical_storage_action_index,
+                           control_indices=None, hvac_action_index=env.hvac_action_index,
+                           battery_model=battery_model or env.battery_model(),
+                           base_policy=rule() if arm.residual else None)
+        agent.fleet_shield = fleet()
+        return agent
 
     if arm.policy == "idle":
         base = IdlePolicy(B, env.action_dim)
     elif arm.policy == "rbc":
-        if list(env.action_names) != RBC_ACTIONS:
-            raise RuntimeError(f"RuleBasedAgent assumes actions {RBC_ACTIONS}; "
-                               f"this environment has {env.action_names}")
-        base = RuleBasedAgent(num_buildings=B, hvac_control=env.hvac_control,
-                              battery_nominal_power=battery["nominal_power"])
+        base = rule()
     else:
         raise ValueError(f"unknown policy {arm.policy!r}")
     if arm.barrier == "none":
@@ -172,4 +234,4 @@ def build_controller(arm: Arm, env, config):
                        action_scale=config.training.action_scale,
                        elec_idx=env.electrical_storage_action_index,
                        safety_cfg=safety, enforce_soc=True, hvac_idx=env.hvac_action_index)
-    return ShieldedController(base, shield)
+    return ShieldedController(base, shield, fleet_shield=fleet())

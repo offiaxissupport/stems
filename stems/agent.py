@@ -60,6 +60,11 @@ class Actor(nn.Module):
         nn.init.uniform_(self.mean_head.weight, -3e-3, 3e-3)
         nn.init.uniform_(self.mean_head.bias, -3e-3, 3e-3)
 
+    def set_initial_log_std(self, value: float) -> None:
+        """Start exploration at sigma = exp(value) whatever the state."""
+        nn.init.zeros_(self.log_std_head.weight)
+        nn.init.constant_(self.log_std_head.bias, float(value))
+
     def forward(self, r: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         feat = self.trunk(r)
         mean = self.mean_head(feat)
@@ -142,8 +147,12 @@ class STEMSAgent:
         deadline_barriers: Optional[List[object]] = None,
         coordination: str = "independent",
         battery_model: Optional[object] = None,
+        base_policy: Optional[object] = None,
     ) -> None:
         self.obs_dim = obs_dim
+        # Residual mode: ``base_policy.select_action(obs)`` is the controller the
+        # learned action corrects (see TrainingConfig.residual_scale).
+        self.base_policy = base_policy
         self.action_dim = action_dim
         self.B = num_buildings
         self.graph = building_graph
@@ -230,6 +239,14 @@ class STEMSAgent:
         self._last_pre_tanh = np.zeros((self.B, action_dim), dtype=np.float32)
         self._last_log_probs = np.zeros(self.B, dtype=np.float32)
         self._ctrl = torch.tensor(self.control_indices, dtype=torch.long, device=self.device)
+        self._last_nominal_actions = np.zeros((self.B, action_dim), dtype=np.float32)
+        # Optional ``stems.fleet.FleetShield`` for a schema with EV chargers: it
+        # turns the requested charging into charging that fits the shared cap and
+        # keeps the departure deadlines. Applied after the per-device barriers.
+        self.fleet_shield = None
+        if self.base_policy is not None:
+            for actor in self.actors:
+                actor.set_initial_log_std(self.cfg.training.residual_log_std)
 
     # ------------------------------------------------------------------
     def select_action(self, obs_list: List[np.ndarray], history: np.ndarray,
@@ -261,18 +278,32 @@ class STEMSAgent:
         self._last_raw_actions = raw.copy()
         self._last_pre_tanh = pre
         self._last_log_probs = logp
-        safe = self.cbf.project(raw, obs_list) if self.use_cbf else raw.copy()
+        # What the controller asks for before the shield: the policy's own action,
+        # or in residual mode the base controller's action plus the correction.
+        if self.base_policy is not None:
+            base = np.asarray(self.base_policy.select_action(obs_list), dtype=np.float32)
+            nominal = np.clip(base + self.cfg.training.residual_scale * raw, -1.0, 1.0)
+        else:
+            nominal = raw
+        self._last_nominal_actions = nominal.copy()
+        safe = self.cbf.project(nominal, obs_list) if self.use_cbf else nominal.copy()
         safe = np.clip(safe, -1.0, 1.0).astype(np.float32)
+        if self.fleet_shield is not None and self.use_cbf:
+            safe = self.fleet_shield.project(safe, obs_list)
         if len(self.control_indices) < self.action_dim:
             mask = np.zeros(self.action_dim, dtype=np.float32)
             mask[self.control_indices] = 1.0
             safe *= mask  # hold non-controlled actuators at neutral (0)
         self._last_safe_actions = safe.copy()
+        if self.base_policy is not None and hasattr(self.base_policy, "notify_executed"):
+            self.base_policy.notify_executed(safe)
         return safe
 
     # ------------------------------------------------------------------
-    def observe(self, next_obs_list: List[np.ndarray]) -> None:
-        """Feed an observed step to the online DHW demand forecaster.
+    def observe(self, next_obs_list: List[np.ndarray],
+                ev_draw_kwh: Optional[np.ndarray] = None) -> None:
+        """Feed an observed step to the online forecasters (hot-water demand, and
+        the load the EV fleet has to fit around when a fleet shield is attached).
 
         Call once per environment step, after ``env.step``. No-op unless the
         anticipatory hot-water barrier is active. Keeping ingestion explicit
@@ -281,6 +312,8 @@ class STEMSAgent:
         """
         if self._dhw_forecaster is not None:
             self._dhw_forecaster.update(next_obs_list)
+        if self.fleet_shield is not None and ev_draw_kwh is not None:
+            self.fleet_shield.observe(next_obs_list, ev_draw_kwh)
 
     # ------------------------------------------------------------------
     @staticmethod

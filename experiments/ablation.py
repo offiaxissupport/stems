@@ -57,14 +57,14 @@ if str(REPO) not in sys.path:
 
 from experiments.controllers import ARMS  # noqa: E402
 from experiments.runner import code_fingerprint, run_one  # noqa: E402
-from experiments.scenario import SEASON_FIRST_DAY, Scenario  # noqa: E402
+from experiments.scenario import SEASON_FIRST_DAY, TX_SCHEMA, Scenario  # noqa: E402
 
 
 def build_grid(args) -> List[Dict[str, Any]]:
     specs: List[Dict[str, Any]] = []
     for season in args.seasons:
         for subset in args.subsets:
-            scenario = Scenario(season=season,
+            scenario = Scenario(schema=args.schema, season=season,
                                 subset_seed=None if subset == "ref" else int(subset),
                                 n_buildings=args.buildings, days=args.days,
                                 hvac_control=args.hvac_control,
@@ -114,6 +114,9 @@ def main() -> None:
     ap.add_argument("--grid-cap", type=float, default=300.0)
     ap.add_argument("--building-cap", type=float, default=80.0)
     ap.add_argument("--workers", type=int, default=6)
+    ap.add_argument("--schema", default=TX_SCHEMA,
+                    help="schema to run on; the housing-and-EV schema adds the fleet "
+                         "shield to every shielded arm")
     ap.add_argument("--hvac-control", choices=["setpoint", "power"], default="setpoint",
                     help="HVAC action semantics: set-point offset (default) or power fraction")
     ap.add_argument("--per-building-actors", action="store_true",

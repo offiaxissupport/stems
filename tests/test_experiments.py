@@ -155,8 +155,12 @@ def test_the_ablation_arms():
         "rl": ("rl", "none"),
         "rl+basic": ("rl", "basic"),
         "rl+calibrated": ("rl", "calibrated"),
+        "rl-res+calibrated": ("rl", "calibrated"),
+        "rl+calibrated+pen": ("rl", "calibrated"),
     }
-    assert [n for n, a in ARMS.items() if a.learns] == ["rl", "rl+basic", "rl+calibrated"]
+    assert [n for n, a in ARMS.items() if a.learns] == [
+        "rl", "rl+basic", "rl+calibrated", "rl-res+calibrated", "rl+calibrated+pen"]
+    assert ARMS["rl-res+calibrated"].residual and ARMS["rl+calibrated+pen"].penalty > 0
 
 
 @pytest.fixture(scope="module")
@@ -227,6 +231,44 @@ def test_basic_and_calibrated_differ_only_in_the_battery_model(mock_env):
         assert not shield.safety.anticipatory and not shield.safety.robust_margins
         assert shield.dhw_barrier is None and shield.cop_model is None
     np.testing.assert_allclose(calibrated.cbf.soc_rate, rbc.shield.soc_rate)
+
+
+def test_untrained_residual_policy_is_the_rule(mock_env):
+    """Residual policy learning starts from the base controller: a fresh actor's
+    mean is ~0, so the deterministic action is the rule's, through the same shield."""
+    from stems.utils import HistoryBuffer
+
+    cfg = _config()
+    residual = build_controller(ARMS["rl-res+calibrated"], mock_env, cfg)
+    rule = build_controller(ARMS["rbc+calibrated"], mock_env, _config())
+    assert residual.base_policy is not None
+    obs, _ = mock_env.reset()
+    hist = HistoryBuffer(mock_env.num_buildings, mock_env.obs_dim, cfg.transformer.window_size)
+    hist.update(obs)
+    a_res = residual.select_action(obs, hist.get(), explore=False)
+    a_rule = rule.select_action(obs, None, explore=False)
+    np.testing.assert_allclose(a_res, a_rule, atol=0.02)
+
+
+def test_residual_exploration_starts_small(mock_env):
+    cfg = _config()
+    residual = build_controller(ARMS["rl-res+calibrated"], mock_env, cfg)
+    scratch = build_controller(ARMS["rl+calibrated"], mock_env, _config())
+    import torch
+
+    r = torch.zeros(1, cfg.fusion.output_dim)
+    assert float(residual.actors[0](r)[1].exp().mean()) == pytest.approx(
+        math.exp(cfg.training.residual_log_std), rel=1e-5)
+    assert float(scratch.actors[0](r)[1].exp().mean()) > 0.6
+
+
+def test_penalty_arm_sets_the_intervention_weight(mock_env):
+    cfg = _config()
+    build_controller(ARMS["rl+calibrated+pen"], mock_env, cfg)
+    assert cfg.training.intervention_penalty == ARMS["rl+calibrated+pen"].penalty > 0
+    cfg2 = _config()
+    build_controller(ARMS["rl+calibrated"], mock_env, cfg2)
+    assert cfg2.training.intervention_penalty == 0.0
 
 
 # ===========================================================================

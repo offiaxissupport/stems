@@ -102,8 +102,8 @@ class BatteryModel:
         x0, x1, y0, y1 = xs[r, idx], xs[r, idx + 1], ys[r, idx], ys[r, idx + 1]
         return y0 + (y1 - y0) * (x - x0) / (x1 - x0)
 
-    def next_soc(self, soc: np.ndarray, action: np.ndarray) -> np.ndarray:
-        """State of charge after one step of ``action`` in [-1, 1], per building."""
+    def _step(self, soc: np.ndarray, action: np.ndarray):
+        """(next state of charge, energy at the terminals [kWh]: + in, - out)."""
         soc = np.asarray(soc, dtype=np.float64)
         action = np.asarray(action, dtype=np.float64)
         cap, p_nom = self.capacity, self.nominal_power
@@ -119,7 +119,18 @@ class BatteryModel:
         e_final = np.where(requested >= 0.0,
                            np.minimum(e_init + charge * root, cap),
                            np.maximum(e_init + discharge / root, 0.0))
-        return e_final / cap
+        terminal = np.where(requested >= 0.0, (e_final - e_init) / root,
+                            (e_final - e_init) * root)
+        return e_final / cap, terminal
+
+    def next_soc(self, soc: np.ndarray, action: np.ndarray) -> np.ndarray:
+        """State of charge after one step of ``action`` in [-1, 1], per building."""
+        return self._step(soc, action)[0]
+
+    def accepted_kwh(self, soc: np.ndarray, action: np.ndarray) -> np.ndarray:
+        """Energy at the battery terminals over the step [kWh]: what it takes in
+        (positive) or gives out (negative), after its own limits."""
+        return self._step(soc, action)[1]
 
     # ------------------------------------------------------------------
     def safe_interval(self, soc: np.ndarray, lo: np.ndarray, hi: np.ndarray,

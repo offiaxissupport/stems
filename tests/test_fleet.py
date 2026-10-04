@@ -1,0 +1,373 @@
+"""``stems.fleet``: the EV plant model, the myopic rules and the joint-feasibility programme.
+
+The scheduling tests use a lossless, curve-free fleet whose answers can be worked
+out by hand; the last tests run on the real simulator.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+
+import numpy as np
+import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from stems.battery import BatteryModel
+from stems.fleet import (BaseLoadForecaster, EVFleetModel, FleetShield, FleetState,
+                         allocate, apply_dead_band, laxity, schedule)
+
+EV_SCHEMA = "citylearn_schemas/tx_travis_8b_ev/schema.json"
+
+
+def simple_fleet(n=3, p_max=10.0, p_min=1.0, capacity=50.0):
+    """n identical vehicles: 50 kWh, 10 kW, no losses, no taper, perfect charger."""
+    flat = np.array([[0.0, 1.0], [1.0, 1.0]])
+    battery = BatteryModel([capacity] * n, [p_max] * n, [0.0] * n, [flat] * n, [flat] * n)
+    return EVFleetModel([True] * n, [p_max] * n, [p_min] * n, [1.0] * n, battery)
+
+
+def fleet_state(slots, cap, soc=0.4, target=0.8, base=None, horizon=8, price=None):
+    n = len(slots)
+    base = np.zeros((horizon, n)) if base is None else np.asarray(base, dtype=float)
+    return FleetState([True] * n, [soc] * n, [target] * n, slots, base, cap, price)
+
+
+# ---------------------------------------------------------------------------
+# Laxity and the myopic rules
+# ---------------------------------------------------------------------------
+
+def test_laxity_is_slots_minus_hours_of_full_charging():
+    model = simple_fleet()                       # 20 kWh to go = 2 h at 10 kW
+    assert laxity(model, fleet_state([2, 3, 4], 100)).tolist() == [0, 1, 2]
+    done = FleetState([True] * 3, [0.9] * 3, [0.8] * 3, [2, 3, 4], np.zeros((4, 3)), 100)
+    assert np.all(np.isinf(laxity(model, done)))
+
+
+def test_rules_enforce_the_same_total_and_differ_in_who_is_served():
+    model, req = simple_fleet(), np.array([10.0, 10.0, 10.0])
+    state = fleet_state([4, 2, 3], cap=15.0)
+    assert allocate(model, state, req, "independent").tolist() == [10, 10, 10]
+    assert allocate(model, state, req, "proportional").tolist() == [5, 5, 5]
+    assert allocate(model, state, req, "edf").tolist() == [0, 10, 5]      # leaves soonest first
+    late = FleetState([True] * 3, [0.4, 0.7, 0.4], [0.8] * 3, [3, 2, 3], np.zeros((4, 3)), 15.0)
+    # Vehicle 1 leaves first but needs 1 h (laxity 1); the others need 2 of 3 (laxity 1).
+    assert allocate(model, late, req, "llf").sum() == pytest.approx(15.0)
+
+
+def test_own_pv_surplus_charges_the_car_without_using_the_shared_budget():
+    model = simple_fleet(2)
+    base = np.array([[-6.0, 3.0]] * 4)           # house 0 exports 6 kW, house 1 imports 3
+    state = FleetState([True, True], [0.4, 0.4], [0.8, 0.8], [3, 3], base, cap=5.0)
+    out = allocate(model, state, np.array([10.0, 10.0]), "proportional")
+    # Shared budget = 5 - 3 = 2 kW. House 0: 6 free + its share; house 1: its share.
+    assert out[0] == pytest.approx(6.0 + 2.0 * 4.0 / 14.0)
+    assert out[1] == pytest.approx(2.0 * 10.0 / 14.0)
+    assert np.maximum(base[0] + out, 0.0).sum() == pytest.approx(5.0)
+
+
+# ---------------------------------------------------------------------------
+# The linear programme
+# ---------------------------------------------------------------------------
+
+def test_feasible_fleet_keeps_the_request_when_it_is_safe():
+    model = simple_fleet()
+    state = fleet_state([4, 4, 4], cap=30.0)
+    sol = schedule(model, state, np.array([10.0, 0.0, 5.0]))
+    assert sol["feasible"] and not sol["binding"]
+    np.testing.assert_allclose(sol["now_kw"], [10.0, 0.0, 5.0], atol=1e-6)
+
+
+def test_programme_forces_only_the_charging_the_deadlines_need():
+    """Policy asks for nothing. 60 kWh are owed; the cap delivers 15 kW for the 4
+    hours all three are parked, i.e. exactly 60: every hour must be used in full."""
+    model = simple_fleet()
+    sol = schedule(model, fleet_state([4, 4, 4], cap=15.0), np.zeros(3))
+    assert sol["feasible"]
+    assert sol["now_kw"].sum() == pytest.approx(15.0, abs=1e-6)
+    relaxed = schedule(model, fleet_state([8, 8, 8], cap=15.0), np.zeros(3))
+    assert relaxed["feasible"] and relaxed["now_kw"].sum() == pytest.approx(0.0, abs=1e-6)
+
+
+def test_joint_infeasibility_is_detected_where_each_vehicle_alone_is_fine():
+    """Each car alone has laxity >= 0, so every per-vehicle barrier is satisfied;
+    together they need 60 kWh and the cap can deliver 55 before they leave."""
+    model = simple_fleet()
+    state = fleet_state([2, 3, 4], cap=15.0)
+    assert np.all(laxity(model, state) >= 0)
+    sol = schedule(model, state, np.array([10.0, 10.0, 10.0]))
+    assert not sol["feasible"]
+    assert sol["total_shortfall_kwh"] == pytest.approx(5.0, abs=1e-4)
+    generous = schedule(model, fleet_state([2, 3, 4], cap=17.5), np.array([10.0] * 3))
+    assert generous["feasible"]
+
+
+def test_unavoidable_shortfall_is_spread_not_dumped_on_one_vehicle():
+    model = simple_fleet()
+    sol = schedule(model, fleet_state([2, 2, 2], cap=15.0), np.array([10.0] * 3))
+    assert sol["total_shortfall_kwh"] == pytest.approx(30.0, abs=1e-4)   # 60 owed, 30 deliverable
+    np.testing.assert_allclose(sol["shortfall_soc"], [0.2, 0.2, 0.2], atol=1e-4)
+    assert sol["worst_shortfall_share"] == pytest.approx(0.5, abs=1e-4)
+
+
+def test_cost_objective_charges_in_the_cheap_hours():
+    model = simple_fleet(1)
+    price = np.array([0.5, 0.5, 0.1, 0.1, 0.5, 0.5])
+    state = fleet_state([6], cap=100.0, price=price, horizon=6)
+    assert schedule(model, state, objective="cost")["now_kw"][0] == pytest.approx(0.0, abs=1e-6)
+    cheap_now = fleet_state([6], cap=100.0, price=price[2:], horizon=4)
+    assert schedule(model, cheap_now, objective="cost")["now_kw"][0] == pytest.approx(10.0, abs=1e-6)
+
+
+def test_dead_band_rounds_toward_the_deadline():
+    model = simple_fleet(2, p_min=1.4)
+    urgent_and_relaxed = FleetState([True, True], [0.4, 0.4], [0.8, 0.8], [2, 8],
+                                    np.zeros((8, 2)), 100.0)
+    out = apply_dead_band(model, urgent_and_relaxed, np.array([0.5, 0.5]))
+    assert out.tolist() == [1.4, 0.0]
+
+
+# ---------------------------------------------------------------------------
+# Forecaster
+# ---------------------------------------------------------------------------
+
+def test_replay_forecast_is_exact_and_needs_no_margin():
+    replay = np.arange(12, dtype=float).reshape(6, 2)
+    f = BaseLoadForecaster(2, replay=replay)
+    obs = [np.zeros(30), np.zeros(30)]
+    np.testing.assert_allclose(f.predict(obs, 3), replay[:3])
+    f.observe(replay[0])
+    np.testing.assert_allclose(f.predict(obs, 2), replay[1:3])
+    assert f.margin == 0.0
+
+
+def test_causal_margin_covers_the_recent_forecast_errors():
+    f = BaseLoadForecaster(1, quantile=0.9, window=50)
+    obs = [np.zeros(30)]
+    rng = np.random.default_rng(0)
+    for _ in range(60):
+        f.predict(obs, 2)
+        f.observe(np.array([rng.uniform(0.0, 4.0)]))
+    recent = np.asarray(f.errors[-50:])
+    assert f.margin == pytest.approx(max(np.quantile(recent, 0.9), 0.0))
+    assert np.mean(recent <= f.margin) >= 0.88
+
+
+# ---------------------------------------------------------------------------
+# Against the simulator
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def ev_env():
+    from stems.environment import STEMSEnvironment
+
+    return STEMSEnvironment(schema=EV_SCHEMA, seed=0, heat_pump=True,
+                            env_kwargs={"episode_time_steps": [(0, 239)]},
+                            hvac_control="setpoint")
+
+
+def test_fleet_model_matches_the_simulator(ev_env):
+    env, cl = ev_env, ev_env._env
+    model = env.ev_fleet_model()
+    layout, e = env.ev_obs_layout()[0], env.ev_action_indices()[0]
+    vehicles = {ev.name: ev for ev in cl.electric_vehicles}
+    rng = np.random.default_rng(0)
+    obs, _ = env.reset()
+    soc_err, draw_err, floor_draw, done = [], [], [], False
+    while not done:
+        t = cl.time_step
+        conn = np.array([o[layout["connected_state"]] for o in obs]) > 0.5
+        soc = np.array([o[layout["soc"]] for o in obs], dtype=float)
+        a = np.where(conn, rng.choice([0.0, 0.05, 0.3, 0.7, 1.0], env.num_buildings), 0.0)
+        actions = np.zeros((env.num_buildings, env.action_dim), dtype=np.float32)
+        actions[:, e] = a
+        predicted, draw = model.next_soc(soc, a), model.draw_kw(soc, a)
+        out = env.step(actions)
+        obs, done = out[0], out[2] or out[3]
+        for i in np.flatnonzero(conn & model.has_ev):
+            charger = cl.buildings[i].electric_vehicle_chargers[0]
+            name = str(np.asarray(charger.charger_simulation.electric_vehicle_id)[t])
+            soc_err.append(abs(predicted[i] - vehicles[name].battery.soc[t]))
+            draw_err.append(abs(draw[i] - env.ev_draw_kwh[i]))
+            if a[i] == 0.05 and soc[i] < 0.7:
+                floor_draw.append(env.ev_draw_kwh[i])
+    assert len(soc_err) > 500
+    assert max(soc_err) < 2e-4
+    assert max(draw_err) < 2e-2
+    np.testing.assert_allclose(floor_draw, 1.4, atol=1e-3)     # the dead band
+
+
+def test_departures_are_scored_on_the_final_hour(ev_env):
+    """A vehicle charged only in its last connected hour must leave with that charge."""
+    env = ev_env
+    model = env.ev_fleet_model()
+    layout, e = env.ev_obs_layout()[0], env.ev_action_indices()[0]
+    obs, _ = env.reset()
+    events, last_obs_soc, done = [], {}, False
+    while not done:
+        conn = np.array([o[layout["connected_state"]] for o in obs]) > 0.5
+        last = conn & (np.array([o[layout["departure_time"]] for o in obs]) == 0)
+        for i in np.flatnonzero(last):
+            last_obs_soc[i] = float(obs[i][layout["soc"]])
+        actions = np.zeros((env.num_buildings, env.action_dim), dtype=np.float32)
+        actions[:, e] = np.where(last & model.has_ev, 1.0, 0.0)
+        out = env.step(actions)
+        obs, done = out[0], out[2] or out[3]
+        for d in env.ev_departures:
+            events.append((d, last_obs_soc[d["building"]]))
+    assert len(events) >= 6
+    gains = [d["soc"] - before for d, before in events]
+    assert min(gains) > 0.05, "the last hour's charge must be in the departure record"
+
+
+def test_lp_shield_meets_every_deadline_under_a_cap_that_binds(ev_env):
+    env = ev_env
+    model = env.ev_fleet_model()
+    layout, e = env.ev_obs_layout()[0], env.ev_action_indices()[0]
+    zeros = np.zeros((env.num_buildings, env.action_dim), dtype=np.float32)
+
+    obs, _ = env.reset()                          # replay: the load without charging
+    base, done = [], False
+    while not done:
+        out = env.step(zeros)
+        base.append([o[20] for o in out[0]])
+        done = out[2] or out[3]
+    base = np.array(base)
+    cap = float(np.maximum(base, 0.0).sum(axis=1).max()) + 8.0    # < one 11 kW charger above the peak
+
+    shield = FleetShield(model, layout, e, cap, "lp", BaseLoadForecaster(env.num_buildings, replay=base))
+    obs, _ = env.reset()
+    departures, imports, done = [], [], False
+    while not done:
+        ask = zeros.copy()
+        ask[:, e] = 1.0                           # every car asks for full power
+        out = env.step(shield.project(ask, obs))
+        shield.observe(out[0], env.ev_draw_kwh)
+        obs, done = out[0], out[2] or out[3]
+        departures += env.ev_departures
+        imports.append(np.maximum([o[20] for o in obs], 0.0).sum())
+    assert len(departures) >= 20
+    missed = [d for d in departures if d["soc"] + 1e-3 < d["required_soc"]]
+    assert not missed, missed[:3]
+    assert max(imports) <= cap + model.p_min.max() + 1e-6       # dead-band rounding at most
+    assert np.mean(np.array(imports) > cap + 1e-6) < 0.02
+
+
+# ---------------------------------------------------------------------------
+# Rules from the scheduling literature
+# ---------------------------------------------------------------------------
+
+def test_static_split_wastes_what_a_neighbour_leaves_unused():
+    model, req = simple_fleet(), np.array([10.0, 10.0, 0.0])
+    state = fleet_state([4, 4, 4], cap=15.0)
+    assert allocate(model, state, req, "static").tolist() == [5, 5, 0]     # 5 kW idle
+    assert allocate(model, state, req, "proportional").sum() == pytest.approx(15.0)
+
+
+def test_sllf_equalises_laxity_after_the_hour():
+    """Chen et al. (2022): served vehicles end the hour with the same laxity."""
+    model = simple_fleet()
+    # Owed 20, 15 and 20 kWh with 3, 3 and 6 hours left: laxity 1, 1.5 and 4.
+    state = FleetState([True] * 3, [0.4, 0.5, 0.4], [0.8] * 3, [3, 3, 6], np.zeros((8, 3)), 12.0)
+    kw = allocate(model, state, np.array([10.0] * 3), "sllf")
+    np.testing.assert_allclose(kw, [8.5, 3.5, 0.0], atol=1e-6)
+    owed = np.array([20.0, 15.0, 20.0])
+    after = (state.slots - 1) - (owed - kw) / 10.0           # laxity one hour later
+    assert after[0] == pytest.approx(after[1]) == pytest.approx(0.85)
+
+
+def test_llf_breaks_ties_toward_the_longer_remaining_charge():
+    """Xu, Pan and Tong (2016): equal laxity -> the vehicle with more left to charge."""
+    model = simple_fleet(2)
+    # Both have laxity 1: vehicle 0 needs 3 h of its 4, vehicle 1 needs 1 h of its 2.
+    state = FleetState([True, True], [0.2, 0.6], [0.8, 0.8], [4, 2], np.zeros((6, 2)), 10.0)
+    assert laxity(model, state).tolist() == [1, 1]
+    assert allocate(model, state, np.array([10.0, 10.0]), "llf").tolist() == [10, 0]
+    assert allocate(model, state, np.array([10.0, 10.0]), "edf").tolist() == [0, 10]
+
+
+def test_flexibility_interval_brackets_every_safe_charging_level():
+    from stems.fleet import fleet_power_bounds
+
+    model = simple_fleet()
+    tight = fleet_power_bounds(model, fleet_state([4, 4, 4], cap=15.0))
+    assert tight["feasible"] and tight["u_min"] == pytest.approx(15.0, abs=1e-6)
+    loose = fleet_power_bounds(model, fleet_state([8, 8, 8], cap=15.0))
+    assert loose["u_min"] == pytest.approx(0.0, abs=1e-6)
+    assert loose["u_max"] == pytest.approx(15.0, abs=1e-6)
+    empty = fleet_power_bounds(model, fleet_state([2, 2, 2], cap=15.0))
+    assert not empty["feasible"] and empty["total_shortfall_kwh"] == pytest.approx(30.0, abs=1e-4)
+
+
+def test_executable_schedule_never_hands_out_less_than_the_minimum_power():
+    """Three cars, 21 kW: the programme alone would give one car 1 kW, which a charger
+    with a 1.4 kW minimum cannot deliver; the executable schedule must not."""
+    from stems.fleet import schedule_executable
+
+    model = simple_fleet(p_min=1.4)
+    state = fleet_state([6, 6, 6], cap=21.0)
+    sol = schedule_executable(model, state, np.array([10.0, 10.0, 10.0]))
+    kw = sol["now_kw"]
+    assert sol["feasible"] and kw.sum() <= 21.0 + 1e-6
+    assert np.all((kw < 1e-6) | (kw >= 1.4 - 1e-6)), kw
+
+
+def test_useful_power_stops_at_the_target_and_at_what_the_battery_takes():
+    model = simple_fleet(2)                       # 50 kWh, 10 kW
+    # Vehicle 0 needs 20 kWh (two full hours); vehicle 1 needs 2 kWh.
+    kw = model.useful_kw(np.array([0.4, 0.76]), np.array([0.8, 0.8]))
+    np.testing.assert_allclose(kw, [10.0, 2.0], atol=1e-3)
+    assert model.useful_kw(np.array([0.9, 0.9]), np.array([0.8, 0.8])).tolist() == [0.0, 0.0]
+
+
+def test_executable_schedule_survives_a_request_to_charge_a_full_car():
+    """A learning policy can ask for anything; P_min does not fit into a full battery."""
+    from stems.fleet import schedule_executable
+
+    model = simple_fleet(2, p_min=1.4)
+    state = FleetState([True, True], [0.999, 0.4], [0.8, 0.8], [5, 5], np.zeros((8, 2)), 30.0)
+    sol = schedule_executable(model, state, np.array([10.0, 10.0]))
+    assert sol["feasible"] and sol["now_kw"][0] < 1e-6 and sol["now_kw"][1] == pytest.approx(10.0)
+
+
+def test_time_reserve_plans_departures_early():
+    model = simple_fleet(1)
+    layout = {"connected_state": 0, "soc": 1, "required_soc_departure": 2, "departure_time": 3}
+    obs = [np.array([1.0, 0.4, 0.8, 3.0] + [0.0] * 26)]        # 4 charging hours, needs 2
+    zeros = np.zeros((1, 1), dtype=np.float32)
+    def now(reserve):
+        shield = FleetShield(model, layout, 0, 100.0, "lp",
+                             BaseLoadForecaster(1, replay=np.zeros((24, 1))), reserve_hours=reserve)
+        return float(shield.project(zeros, obs)[0, 0])
+    assert now(0) == 0.0 and now(1) == 0.0       # laxity 2, then 1: still room to wait
+    assert now(2) == pytest.approx(1.0)          # planned to leave 2 h early: must start now
+
+
+def test_a_granted_draw_becomes_the_command_that_produces_it():
+    """With a battery that accepts 80% of the command, 4 kW of draw needs a 5 kW command."""
+    flat, limited = np.array([[0.0, 1.0], [1.0, 1.0]]), np.array([[0.0, 1.0], [0.8, 0.8]])
+    battery = BatteryModel([50.0], [10.0], [0.0], [flat], [limited])
+    model = EVFleetModel([True], [10.0], [1.0], [1.0], battery)
+    soc = np.array([0.4])
+    assert model.draw_kw(soc, np.array([1.0]))[0] == pytest.approx(8.0)
+    a = model.action_for_draw(soc, np.array([4.0]))
+    assert model.draw_kw(soc, a)[0] == pytest.approx(4.0, abs=1e-4)
+    assert model.action_for_draw(soc, np.array([9.5]))[0] == 1.0       # more than it can take
+    assert model.action_for_draw(soc, np.array([0.0]))[0] == 0.0
+
+
+def test_requirement_holds_at_departure_not_at_the_start_of_the_last_hour():
+    """A parked battery loses charge: at its requirement with an hour to go, a
+    vehicle leaves below it unless it is topped up."""
+    flat = np.array([[0.0, 1.0], [1.0, 1.0]])
+    battery = BatteryModel([50.0], [10.0], [0.01], [flat], [flat])     # loses 1% per hour
+    model = EVFleetModel([True], [10.0], [1.0], [1.0], battery)
+    at_target = FleetState([True], [0.80], [0.80], [1], np.zeros((4, 1)), 100.0)
+    assert model.idle_soc(at_target.soc, at_target.slots)[0] == pytest.approx(0.792)
+    assert laxity(model, at_target)[0] == 0                 # must charge in its last hour
+    assert model.useful_kw(at_target.soc, at_target.target)[0] > 0.0
+    comfortable = FleetState([True], [0.85], [0.80], [3], np.zeros((4, 1)), 100.0)
+    assert np.isinf(laxity(model, comfortable)[0])          # 0.85 * 0.99^3 = 0.825 >= 0.80
+    sol = schedule(model, at_target, np.zeros(1))
+    assert sol["feasible"] and sol["now_kw"][0] > 0.0       # the programme tops it up too

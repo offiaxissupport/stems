@@ -56,6 +56,7 @@ DESCRIPTIVE_KPIS = [
     "pv_self_consumption", "battery_equivalent_full_cycles",
     "hvac_on_transitions_per_building_day", "barrier_intervention_rate",
     "cost_cv_across_buildings", "electricity_consumption",
+    "ev_missed_departure_rate", "ev_energy_shortfall_kwh", "cap_exceedance_kwh",
 ]
 
 # (arm, reference, question the difference answers)
@@ -65,6 +66,9 @@ CONTRASTS: List[Tuple[str, str, str]] = [
     ("rl+calibrated", "idle+calibrated", "what learning adds over no control"),
     ("rl+calibrated", "rbc+calibrated", "what learning adds over the time-of-use rule"),
     ("rbc+calibrated", "idle+calibrated", "what the time-of-use rule adds over no control"),
+    ("rl-res+calibrated", "rbc+calibrated", "what a learned correction adds to the rule"),
+    ("rl-res+calibrated", "rl+calibrated", "learning on the rule vs learning from scratch"),
+    ("rl+calibrated+pen", "rl+calibrated", "what penalising shield interventions changes"),
 ]
 
 
