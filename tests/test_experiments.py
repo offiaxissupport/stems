@@ -1,13 +1,3 @@
-"""Tests for the experiment harness: scenarios, arms, actuator evidence, aggregation.
-
-Run:  .venv/Scripts/python -m pytest tests/test_experiments.py -q
-
-These run without real CityLearn: controllers are built on the explicit mock
-environment and aggregation runs on synthetic records. The end-to-end path is
-exercised separately by a smoke grid
-(``python -m experiments.ablation --days 3 --episodes 1``).
-"""
-
 from __future__ import annotations
 
 import json
@@ -27,10 +17,6 @@ from experiments.scenario import (REFERENCE_SHARED_FIELDS, REPO, TX_SCHEMA, Scen
                                   materialize_subset_schema, sample_buildings,
                                   schema_buildings, season_windows)
 
-# ===========================================================================
-# Scenarios
-# ===========================================================================
-
 
 def test_day_window_is_inclusive_and_hourly():
     assert day_window(0, 1) == (0, 23)
@@ -46,7 +32,6 @@ def test_evaluation_window_follows_training_window_without_overlap(season):
 
 
 def test_year_scenario_is_the_whole_year_in_sample():
-    """The STEMS paper's protocol: train on the year, evaluate on the same year."""
     train, evaluation = season_windows("year")
     assert train == evaluation == (0, 8759)
     sc = Scenario(season="year")
@@ -55,7 +40,6 @@ def test_year_scenario_is_the_whole_year_in_sample():
 
 
 def test_paper_barrier_is_lossless_and_per_battery(mock_env):
-    """The STEMS barrier knows each battery's size but not its losses."""
     from experiments.controllers import safety_layer
 
     _, linear = safety_layer("linear", mock_env)
@@ -143,8 +127,6 @@ def test_scenario_keys_distinguish_every_varied_field():
 def test_env_kwargs_match_the_season_windows():
     s = Scenario(season="summer", days=7)
     (t0, t1), (e0, e1) = season_windows("summer", 7)
-    # Episodes inside the full-year simulation -- never a shortened simulation,
-    # which would re-size every device.
     assert s.env_kwargs("train") == {"episode_time_steps": [(t0, t1)]}
     assert s.env_kwargs("eval") == {"episode_time_steps": [(e0, e1)]}
     assert "simulation_start_time_step" not in s.env_kwargs("train")
@@ -153,17 +135,11 @@ def test_env_kwargs_match_the_season_windows():
 
 
 def test_environment_refuses_to_shorten_the_simulation():
-    """Windows must be episodes: a shortened simulation re-sizes every device."""
     from stems.environment import STEMSEnvironment
 
     with pytest.raises(ValueError, match="episode_time_steps"):
         STEMSEnvironment(force_mock=True, env_kwargs={"simulation_start_time_step": 0,
                                                       "simulation_end_time_step": 167})
-
-
-# ===========================================================================
-# Arms and controllers
-# ===========================================================================
 
 
 def test_the_ablation_arms():
@@ -201,7 +177,7 @@ def mock_env():
     try:
         env.battery_info()
         env.dhw_info()
-    except Exception as exc:  # pragma: no cover
+    except Exception as exc:
         pytest.skip(f"mock environment cannot supply device parameters: {exc!r}")
     env.reset()
     return env
@@ -252,7 +228,6 @@ def test_basic_barrier_assumes_the_uniform_rate(mock_env):
 
 
 def test_basic_and_calibrated_differ_only_in_the_battery_model(mock_env):
-    """No margin, buffer, hot-water or efficiency term is bundled into either arm."""
     basic = build_controller(ARMS["rl+basic"], mock_env, _config())
     calibrated = build_controller(ARMS["rl+calibrated"], mock_env, _config())
     rbc = build_controller(ARMS["rbc+calibrated"], mock_env, _config())
@@ -264,8 +239,6 @@ def test_basic_and_calibrated_differ_only_in_the_battery_model(mock_env):
 
 
 def test_untrained_residual_policy_is_the_rule(mock_env):
-    """Residual policy learning starts from the base controller: a fresh actor's
-    mean is ~0, so the deterministic action is the rule's, through the same shield."""
     from stems.utils import HistoryBuffer
 
     cfg = _config()
@@ -335,13 +308,13 @@ def test_charger_floor_holds_the_request_up_and_touches_nothing_else():
         o[0], o[1], o[2], o[3] = connected, hour, 0.8, 5.0
         return [o]
     floor = ChargerFloor(action_dim=4, ev_index=3, layout=layout, fraction=0.5)
-    assert floor(obs(23)).tolist() == [[-1.0, -1.0, -1.0, 0.5]]     # off-peak, car short
-    assert floor(obs(18)).tolist() == [[-1.0, -1.0, -1.0, 0.0]]     # tariff peak: no floor
-    assert floor(obs(23, connected=0.0))[0, 3] == 0.0               # no car
-    asked = np.array([[-0.7, 0.2, 0.9, -1.0]], dtype=np.float32)    # a policy that refuses to charge
+    assert floor(obs(23)).tolist() == [[-1.0, -1.0, -1.0, 0.5]]
+    assert floor(obs(18)).tolist() == [[-1.0, -1.0, -1.0, 0.0]]
+    assert floor(obs(23, connected=0.0))[0, 3] == 0.0
+    asked = np.array([[-0.7, 0.2, 0.9, -1.0]], dtype=np.float32)
     assert np.maximum(asked, floor(obs(23)))[0] == pytest.approx([-0.7, 0.2, 0.9, 0.5])
     keen = np.array([[0.0, 0.0, 0.0, 0.9]], dtype=np.float32)
-    assert np.maximum(keen, floor(obs(23)))[0, 3] == pytest.approx(0.9)   # asking for more is the policy's
+    assert np.maximum(keen, floor(obs(23)))[0, 3] == pytest.approx(0.9)
     with pytest.raises(ValueError):
         ChargerFloor(4, 3, layout, fraction=0.0)
 
@@ -354,9 +327,9 @@ def test_rule_on_a_schema_without_a_heat_pump_keeps_only_the_devices_it_has():
                           battery_nominal_power=np.array([5.0, 5.0]), has_hvac=False)
     obs = [np.zeros(28) for _ in range(2)]
     for o in obs:
-        o[1], o[16] = 12.0, 3.0                     # a charging hour, 3 kW of load
+        o[1], o[16] = 12.0, 3.0
     full = rule.select_action(obs)
-    assert full.shape == (2, 3) and np.all(full[:, 2] == 0.0)      # no thermostat without a heat pump
+    assert full.shape == (2, 3) and np.all(full[:, 2] == 0.0)
     two = RuleColumns(rule, ["dhw_storage", "electrical_storage"]).select_action(obs)
     assert two.shape == (2, 2)
     assert two[0] == pytest.approx([RuleBasedAgent.DHW_CHARGE_ACTION, RuleBasedAgent.CHARGE_ACTION])
@@ -382,21 +355,16 @@ def test_car_request_modes_of_the_rule():
 
     def obs(hour):
         o = np.zeros(30)
-        o[0], o[2], o[3] = 1.0, 0.8, 5.0          # connected, needs 0.8
-        o[1] = hour                                # CityLearn hour, and the car's state of charge
+        o[0], o[2], o[3] = 1.0, 0.8, 5.0
+        o[1] = hour
         return [o]
     ask = lambda mode, hour: float(EVRule(None, 2, 1, {**layout, "soc": 4}, ev_request=mode)
                                    .select_action(obs(hour))[0, 1])
     assert ask("asap", 18) == 1.0 and ask("asap", 23) == 1.0
-    assert ask("offpeak", 18) == 0.0 and ask("offpeak", 23) == 1.0      # 17..21 is the tariff peak
+    assert ask("offpeak", 18) == 0.0 and ask("offpeak", 23) == 1.0
     assert ask("never", 18) == 0.0 and ask("never", 23) == 0.0
     with pytest.raises(ValueError):
         EVRule(None, 2, 1, layout, ev_request="sometimes")
-
-
-# ===========================================================================
-# Actuator evidence
-# ===========================================================================
 
 
 class _FakeEnv:
@@ -442,7 +410,6 @@ def test_responsive_storage_is_verified():
 
 
 def test_inert_actuator_fails_verification():
-    """The failure mode of the hot-water defect: commands sent, nothing moves."""
     ev = ActuatorEvidence(_FakeEnv())
     _rollout(ev, responsive_battery=True, responsive_dhw=False)
     s = ev.summary()
@@ -452,15 +419,10 @@ def test_inert_actuator_fails_verification():
 
 def test_too_few_commands_is_insufficient_not_a_pass():
     ev = ActuatorEvidence(_FakeEnv())
-    _rollout(ev, responsive_battery=True, steps=30, charge_every=100)   # charges once
+    _rollout(ev, responsive_battery=True, steps=30, charge_every=100)
     s = ev.summary()
     assert s["battery"]["responds"] is None
     assert s["verified"] is None
-
-
-# ===========================================================================
-# Aggregation
-# ===========================================================================
 
 
 def test_summarize_confidence_interval_and_p_value():
@@ -483,9 +445,9 @@ def test_summarize_ignores_missing_values_and_needs_two_for_an_interval():
 
 def test_holm_step_down():
     out = aggregate.holm({"a": 0.01, "b": 0.04, "c": 0.03, "d": None})
-    assert out["a"]["p_holm"] == pytest.approx(0.03)      # 3 x 0.01
-    assert out["c"]["p_holm"] == pytest.approx(0.06)      # 2 x 0.03
-    assert out["b"]["p_holm"] == pytest.approx(0.06)      # max(1 x 0.04, previous)
+    assert out["a"]["p_holm"] == pytest.approx(0.03)
+    assert out["c"]["p_holm"] == pytest.approx(0.06)
+    assert out["b"]["p_holm"] == pytest.approx(0.06)
     assert out["a"]["significant"] and not out["b"]["significant"]
     assert out["d"]["p_holm"] is None
 
@@ -520,8 +482,8 @@ def test_seeds_are_averaged_within_a_scenario_before_replication(tmp_path, monke
         _record(tmp_path, scen, "rbc+calibrated", 0, ref)
         for seed, v in enumerate(rl):
             _record(tmp_path, scen, "rl+calibrated", seed, v)
-    _record(tmp_path, "A", "rl+calibrated", 2, 1000.0, verified=False)   # excluded, listed
-    _record(tmp_path, "B", "rl+calibrated", 3, 0.0, status="error")      # counted
+    _record(tmp_path, "A", "rl+calibrated", 2, 1000.0, verified=False)
+    _record(tmp_path, "B", "rl+calibrated", 3, 0.0, status="error")
     summary = _run_aggregate(tmp_path, monkeypatch)
 
     assert summary["counts"] == {"records": 8, "ok": 7, "errors": 1, "failed": 1}
@@ -535,7 +497,7 @@ def test_seeds_are_averaged_within_a_scenario_before_replication(tmp_path, monke
 
 def test_learning_contrast_uses_only_matched_seeds(tmp_path, monkeypatch):
     _record(tmp_path, "A", "rl+calibrated", 0, 5.0)
-    _record(tmp_path, "A", "rl+calibrated", 1, 100.0)    # no seed-1 partner in `rl`
+    _record(tmp_path, "A", "rl+calibrated", 1, 100.0)
     _record(tmp_path, "A", "rl", 0, 7.0)
     summary = _run_aggregate(tmp_path, monkeypatch)
     c = summary["contrasts"]["pooled"]["rl+calibrated - rl"]["cost"]
@@ -551,7 +513,6 @@ def test_records_from_different_code_are_refused(tmp_path, monkeypatch):
 
 
 def test_charge_commands_on_a_full_store_are_not_evidence():
-    """An unshielded policy pinned at full charge must not be marked as an inert actuator."""
     ev = ActuatorEvidence(_FakeEnv())
     B = 2
     for t in range(60):
@@ -561,7 +522,7 @@ def test_charge_commands_on_a_full_store_are_not_evidence():
         pre = [np.zeros(30, dtype=np.float32) for _ in range(B)]
         post = [np.zeros(30, dtype=np.float32) for _ in range(B)]
         for i in range(B):
-            pre[i][19] = post[i][19] = 1.0          # battery full: cannot move
+            pre[i][19] = post[i][19] = 1.0
             pre[i][18], post[i][18] = 0.5, (0.55 if cmd else 0.49)
         ev.add(pre, actions, post)
     s = ev.summary()

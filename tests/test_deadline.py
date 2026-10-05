@@ -1,13 +1,3 @@
-"""Tests for the unified deadline-storage barrier (DHW, EV) and coupled feasibility.
-
-Run:  .venv/Scripts/python -m pytest tests/test_deadline.py -q
-
-The first test class is the important one: it proves the refactor of the
-hot-water barrier onto ``DeadlineStorageBarrier`` is *behaviour-identical* to the
-implementation the heat-pump-only results were produced with. Those results are
-benchmarked in separate work, so silent drift here would invalidate them.
-"""
-
 from __future__ import annotations
 
 import numpy as np
@@ -41,18 +31,9 @@ def _dhw_dynamics(B=2):
                        np.array([0.87, 0.57]))
 
 
-# ===========================================================================
-# 1. The refactor must not change hot-water behaviour
-# ===========================================================================
-
 def _legacy_dhw_projection(actions, obs_list, dyn, forecaster, cop,
                            horizon, margin, soc_cap, weather_gain,
                            weather_horizon, dhw_idx=0):
-    """The pre-refactor hot-water projection, reproduced verbatim.
-
-    Kept as a frozen reference so the unified barrier can be diffed against the
-    exact code path that produced the published heat-pump numbers.
-    """
     actions = np.asarray(actions, dtype=np.float32).copy()
     soc = np.array([float(o[IDX_SOC_DHW]) for o in obs_list], dtype=np.float32)
     demand = forecaster.forecast(obs_list, horizon)
@@ -72,19 +53,6 @@ def _legacy_dhw_projection(actions, obs_list, dyn, forecaster, cop,
 @pytest.mark.parametrize("weather_gain", [0.0, 0.15])
 @pytest.mark.parametrize("horizon", [1, 2, 3])
 def test_refactor_matches_legacy_dhw_to_float32_precision(horizon, weather_gain):
-    """The unified barrier must reproduce the legacy projection.
-
-    Randomised over tank states, demands, nominal actions and weather fronts.
-
-    Agreement is exact except for a 1-ulp float32 difference introduced by
-    summation order: the legacy code evaluated
-    ``demand/C + margin + weather`` while the base class applies its margin last,
-    as ``(demand/C + weather) + margin``. The observed discrepancy is <= 1e-7 on
-    values of order 1, i.e. one or two units in the last place of float32, and
-    cannot change any reported metric -- the readiness comparison alone carries a
-    1e-6 guard band, an order of magnitude larger. The tolerance is therefore set
-    at float32 resolution rather than zero, and deliberately no looser.
-    """
     rng = np.random.default_rng(0)
     dyn = _dhw_dynamics()
     cop = CoPModel(np.full(2, 0.29), np.full(2, 46.0), np.full(2, 0.29),
@@ -129,7 +97,6 @@ def test_refactored_required_soc_matches_legacy():
 
 
 def test_dhw_deadline_is_always_immediate():
-    """Hot water carries no deferral: any unmet requirement is urgent now."""
     dyn = _dhw_dynamics()
     f = DHWDemandForecaster(2, alpha=0.5, warmup=1)
     b = DHWReadinessBarrier(dyn, f, None, horizon=2)
@@ -139,10 +106,6 @@ def test_dhw_deadline_is_always_immediate():
     assert np.all(u["steps_to_deadline"] == 0.0)
     assert np.all(u["slack"] <= 0.0)
 
-
-# ===========================================================================
-# 2. Generic barrier semantics
-# ===========================================================================
 
 def _generic(rate, bound, req_soc, steps, active=True, margin=0.0, soc_cap=1.0,
              soc=0.0, capacity=50.0, efficiency=0.9):
@@ -157,7 +120,6 @@ def _generic(rate, bound, req_soc, steps, active=True, margin=0.0, soc_cap=1.0,
 
 
 def test_positive_slack_defers_charging():
-    """A deadline far enough away must not force a charge this step."""
     b = _generic(rate=0.25, bound=1.0, req_soc=0.8, steps=10, soc=0.2)
     obs = [np.zeros(OBS_DIM, np.float32)]
     out = b.project(np.zeros((1, 3), np.float32), obs)
@@ -165,7 +127,6 @@ def test_positive_slack_defers_charging():
 
 
 def test_zero_slack_forces_charging():
-    """At the latest possible start the barrier must command the charge."""
     b = _generic(rate=0.25, bound=1.0, req_soc=0.8, steps=2, soc=0.2)
     obs = [np.zeros(OBS_DIM, np.float32)]
     out = b.project(np.zeros((1, 3), np.float32), obs)
@@ -190,13 +151,8 @@ def test_energy_accounting_uses_capacity_and_efficiency():
     b = _generic(rate=0.5, bound=1.0, req_soc=0.8, steps=0, soc=0.3,
                  capacity=40.0, efficiency=0.8)
     obs = [np.zeros(OBS_DIM, np.float32)]
-    # gap 0.5 * 40 kWh / 0.8 = 25 kWh
     assert b.energy_still_required_kwh(obs)[0] == pytest.approx(25.0, rel=1e-5)
 
-
-# ===========================================================================
-# 3. EV barrier
-# ===========================================================================
 
 EV_LAYOUT = EVObsLayout(connected_state=30, departure_time=31,
                         required_soc_departure=32, soc=33,
@@ -205,7 +161,6 @@ EV_LAYOUT = EVObsLayout(connected_state=30, departure_time=31,
 
 def _ev_obs(connected=1.0, departure=8.0, req_soc=0.8, soc=0.3,
             capacity=60.0, hour=22.0):
-    """``departure`` is a countdown in timesteps, matching CityLearn's field."""
     o = np.zeros(OBS_DIM, dtype=np.float32)
     o[IDX_HOUR] = hour
     o[30], o[31], o[32], o[33], o[34] = connected, departure, req_soc, soc, capacity
@@ -220,16 +175,13 @@ def _ev_barrier(p_kw=7.4, bound=1.0):
 
 
 def test_departure_countdown_is_used_verbatim():
-    """CityLearn's departure field is already remaining steps, not a clock hour."""
     conn = np.array([True])
     assert steps_to_departure(np.array([10.0]), conn)[0] == pytest.approx(10.0)
-    # -1 is CityLearn's "not applicable" sentinel and must not become a deadline.
     assert steps_to_departure(np.array([-1.0]), conn)[0] == pytest.approx(0.0)
     assert steps_to_departure(np.array([10.0]), np.array([False]))[0] == pytest.approx(0.0)
 
 
 def test_ev_rate_tracks_the_connected_car():
-    """A bigger battery on the same charger charges more slowly in SOC terms."""
     b = _ev_barrier()
     small = b.current_rate([_ev_obs(capacity=30.0)])[0]
     large = b.current_rate([_ev_obs(capacity=90.0)])[0]
@@ -238,22 +190,13 @@ def test_ev_rate_tracks_the_connected_car():
 
 
 def test_ev_rate_is_conservative_against_nameplate():
-    """The modelled rate must under-predict, never over-predict, the real gain.
-
-    The projection is a latest-start trigger, so an optimistic rate starts the
-    charge too late to finish and misses the deadline by a hair every time. The
-    nameplate P*eta/C over-predicts the simulator's actual state-of-charge gain
-    (measured 0.160 against a predicted 0.174), so the rate is derated.
-    """
     b = _ev_barrier()
     nameplate = 7.4 * 0.95 / 60.0
     assert b.current_rate([_ev_obs(capacity=60.0)])[0] < nameplate
 
 
 def test_ev_defers_overnight_then_commits():
-    """Ten steps out the charge waits; with the gap barely coverable it starts."""
     b = _ev_barrier()
-    # 0.5 SOC gap on a 60 kWh car at 7.4 kW -> ceil(0.5 / 0.117) = 5 steps needed.
     obs_early = [_ev_obs(departure=10.0, soc=0.3, req_soc=0.8)]
     assert b.project(np.zeros((1, 3), np.float32), obs_early)[0, 0] == pytest.approx(0.0)
 
@@ -269,7 +212,6 @@ def test_ev_disconnected_bay_is_inert():
 
 
 def test_ev_at_risk_is_reported_not_hidden():
-    """An unreachable departure must surface: no action can repair it."""
     b = _ev_barrier(p_kw=3.0)
     obs = [_ev_obs(departure=1.0, soc=0.1, req_soc=1.0, capacity=90.0)]
     rep = b.deadline_report(obs)
@@ -277,14 +219,8 @@ def test_ev_at_risk_is_reported_not_hidden():
     assert rep["slack"][0] < 0
 
 
-# ===========================================================================
-# 4. Coupled feasibility -- where the per-device guarantee breaks
-# ===========================================================================
-
 def test_coupled_feasibility_detects_an_empty_safe_set():
-    """Individually satisfiable deadlines can be jointly impossible."""
     obs = [np.zeros(OBS_DIM, np.float32)]
-    # Two devices each owing 20 kWh within one step, behind a 10 kW cap.
     b1 = _generic(rate=0.5, bound=1.0, req_soc=0.5, steps=1, soc=0.0,
                   capacity=40.0, efficiency=1.0)
     b2 = _generic(rate=0.5, bound=1.0, req_soc=0.5, steps=1, soc=0.0,
@@ -308,7 +244,6 @@ def test_empty_barrier_set_is_trivially_feasible():
 
 
 def test_prioritise_serves_the_earliest_deadline_first():
-    """When something must slip, the choice is EDF -- not array order."""
     obs = [np.zeros(OBS_DIM, np.float32)]
     urgent = _generic(rate=1.0, bound=1.0, req_soc=0.5, steps=1, soc=0.0,
                       capacity=20.0, efficiency=1.0)

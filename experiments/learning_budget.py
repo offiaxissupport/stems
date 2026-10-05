@@ -1,14 +1,4 @@
 #!/usr/bin/env python3
-"""How many episodes does the learned policy need? Evaluate as training proceeds.
-
-Trains one ``rl+calibrated`` agent on a scenario's training window and, every
-``--every`` episodes, evaluates the deterministic policy on the held-out window.
-The rule-based and no-control references are evaluated once on the same window,
-so the curve shows where (if anywhere) learning overtakes them.
-
-    .venv/Scripts/python -m experiments.learning_budget --episodes 60 --every 10
-    .venv/Scripts/python -m experiments.learning_budget --share-parameters
-"""
 
 from __future__ import annotations
 
@@ -23,10 +13,10 @@ REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from experiments.controllers import ARMS, build_controller  # noqa: E402
-from experiments.runner import (_window_len, code_fingerprint, evaluate,  # noqa: E402
+from experiments.controllers import ARMS, build_controller
+from experiments.runner import (_window_len, code_fingerprint, evaluate,
                                 make_config, train)
-from experiments.scenario import Scenario  # noqa: E402
+from experiments.scenario import Scenario
 
 KPIS = ("cost", "safety_violation_rate", "discomfort_rate", "peak_import_kw",
         "battery_equivalent_full_cycles", "electricity_consumption")

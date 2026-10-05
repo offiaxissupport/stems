@@ -1,15 +1,3 @@
-"""CityLearn data conventions that the code previously got wrong.
-
-Measured from the tx_travis_8b data and the CityLearn 2.6.0b1 source:
-
-* ``hour`` runs 1..24, not 0..23;
-* ``day_type`` is 1 = Monday .. 7 = Sunday, 8 = holiday;
-* ``outdoor_dry_bulb_temperature_predicted_1/2/3`` lead by 6 / 12 / 24 hours.
-
-The last test checks these against the real simulator, so a future dataset
-with different conventions fails here rather than skewing a result.
-"""
-
 from __future__ import annotations
 
 import os
@@ -47,16 +35,15 @@ def test_weekend_is_saturday_sunday_and_holidays(day_type, weekend):
 
 def test_forecast_interpolates_the_6_12_24_hour_predictions():
     t = outdoor_temperature_forecast(_obs(), 30)
-    assert t[0] == pytest.approx(11.0)    # +1 h: 1/6 of the way to +6 h
-    assert t[5] == pytest.approx(16.0)    # +6 h: predicted_1
-    assert t[8] == pytest.approx(19.0)    # +9 h: halfway to +12 h
-    assert t[11] == pytest.approx(22.0)   # +12 h: predicted_2
-    assert t[23] == pytest.approx(34.0)   # +24 h: predicted_3
-    assert t[29] == pytest.approx(34.0)   # held beyond the last prediction
+    assert t[0] == pytest.approx(11.0)
+    assert t[5] == pytest.approx(16.0)
+    assert t[8] == pytest.approx(19.0)
+    assert t[11] == pytest.approx(22.0)
+    assert t[23] == pytest.approx(34.0)
+    assert t[29] == pytest.approx(34.0)
 
 
 def test_short_horizon_does_not_see_a_front_six_hours_out():
-    """A 2 h horizon must not report a +6 h cold front at full strength."""
     t = outdoor_temperature_forecast(_obs(t_out=10.0, t_pred=(-2.0, -2.0, -2.0)), 2)
     assert np.all(t > 5.0)
 

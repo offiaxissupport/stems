@@ -31,3 +31,7 @@ stems_*.nav
 stems_*.out
 stems_*.snm
 stems_*.toc
+
+# Run logs and local tool settings
+logs/
+.claude/

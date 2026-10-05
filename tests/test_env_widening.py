@@ -1,23 +1,3 @@
-"""Heterogeneous-building support: canonical padded observations and actions.
-
-Run:  .venv/Scripts/python -m pytest tests/test_env_widening.py -q
-
-CityLearn buildings need not agree. In the EV challenge datasets the per-building
-action space has 1-3 entries and the observation vector 28-42, because only some
-buildings own a charger and charger ids are baked into observation names. STEMS
-needs one shape for all buildings, so the wrapper builds a canonical padded
-layout with a per-building map into native indices.
-
-Two properties are load-bearing and tested here:
-
-1. On a homogeneous schema (``tx_travis_8b``) the canonical layout must reduce
-   *exactly* to the previous behaviour -- heat-pump-only results are benchmarked
-   in separate work and must not move.
-2. On a heterogeneous schema the padding must be inert: a building without a
-   charger reports ``connected_state = 0`` (which the EV barrier already reads as
-   "no vehicle") and its padded action slot must never reach CityLearn.
-"""
-
 from __future__ import annotations
 
 import numpy as np
@@ -29,24 +9,19 @@ from stems.environment import (EV_SLOT_FIELDS, OBS_NAMES, STEMSEnvironment,
 EV_DATASET = "citylearn_challenge_2022_phase_all_plus_evs"
 
 
-# ===========================================================================
-# 1. The homogeneous schema must be untouched
-# ===========================================================================
-
 @pytest.fixture(scope="module")
 def travis():
     try:
         env = STEMSEnvironment(seed=0, heat_pump=True)
-    except Exception as exc:                                    # pragma: no cover
+    except Exception as exc:
         pytest.skip(f"tx_travis_8b unavailable: {exc!r}")
     env.reset()
     return env
 
 
 def test_travis_layout_is_unchanged(travis):
-    """Same buildings, dims and action order as before the widening."""
     assert travis.num_buildings == 8
-    assert travis.obs_dim == 30                       # 28 base + 2 heat-pump
+    assert travis.obs_dim == 30
     assert travis.action_dim == 3
     assert travis.action_names == ["dhw_storage", "electrical_storage",
                                    "cooling_or_heating_device"]
@@ -59,7 +34,6 @@ def test_travis_has_no_ev_padding(travis):
 
 
 def test_travis_has_no_absent_observations(travis):
-    """Every STEMS base feature must really be present -- no silent zero-fill."""
     assert travis.absent_observations == []
 
 
@@ -77,42 +51,31 @@ def test_travis_isolation_modes_unchanged(travis):
 
 
 def test_travis_ev_group_still_fails_loud(travis):
-    """Asking for a device the schema lacks must raise, not silently no-op."""
     with pytest.raises(RuntimeError, match="electric_vehicle_storage"):
         travis.resolve_control_indices("ev")
 
 
-# ===========================================================================
-# 2. Missing base features must fail loud by default
-# ===========================================================================
-
 def test_missing_observations_raise_without_opt_in():
-    """The EV dataset has no thermal observations; that must not pass silently."""
     try:
         with pytest.raises(RuntimeError, match="missing required observations"):
             STEMSEnvironment(schema=EV_DATASET, seed=0)
-    except Exception as exc:                                    # pragma: no cover
+    except Exception as exc:
         if "not found" in str(exc):
             pytest.skip(f"EV dataset unavailable: {exc!r}")
         raise
 
 
-# ===========================================================================
-# 3. The heterogeneous schema
-# ===========================================================================
-
 @pytest.fixture(scope="module")
 def ev_env():
     try:
         env = STEMSEnvironment(schema=EV_DATASET, seed=0, allow_missing_obs=True)
-    except Exception as exc:                                    # pragma: no cover
+    except Exception as exc:
         pytest.skip(f"EV dataset unavailable: {exc!r}")
     env.reset()
     return env
 
 
 def test_heterogeneous_buildings_become_one_shape(ev_env):
-    """17 buildings with native obs dims 28-42 must present one padded vector."""
     obs, _ = ev_env.reset()
     assert ev_env.num_buildings == 17
     assert len({np.shape(o) for o in obs}) == 1
@@ -137,14 +100,12 @@ def test_obs_dim_accounts_for_every_ev_slot(ev_env):
 
 
 def test_absent_thermal_features_are_reported(ev_env):
-    """Zero-filled features must be named in metadata, not quietly imputed."""
     absent = ev_env.absent_observations
     assert "indoor_dry_bulb_temperature" in absent
     assert "dhw_storage_soc" in absent
 
 
 def test_only_some_buildings_own_a_charger(ev_env):
-    """The padding is real: not every building has a bay."""
     mask = ev_env.action_presence_mask()
     ev_slot = ev_env.ev_action_indices()[0]
     owners = int(mask[:, ev_slot].sum())
@@ -152,7 +113,6 @@ def test_only_some_buildings_own_a_charger(ev_env):
 
 
 def test_padded_slots_read_zero_and_are_inert(ev_env):
-    """A building with no bay must report connected_state 0 in that slot."""
     obs, _ = ev_env.reset()
     layout = ev_env.ev_obs_layout()[0]
     mask = ev_env.action_presence_mask()
@@ -164,7 +124,6 @@ def test_padded_slots_read_zero_and_are_inert(ev_env):
 
 
 def test_padded_action_never_reaches_citylearn(ev_env):
-    """Commanding a slot a building lacks must not raise or leak into another."""
     ev_env.reset()
     actions = np.ones((ev_env.num_buildings, ev_env.action_dim), dtype=np.float32)
     native = ev_env._remap_actions(actions)
@@ -174,7 +133,6 @@ def test_padded_action_never_reaches_citylearn(ev_env):
 
 
 def test_charging_moves_soc_only_on_occupied_bays(ev_env):
-    """The end-to-end check: a charge command must charge, and only where valid."""
     obs, _ = ev_env.reset()
     layout = ev_env.ev_obs_layout()[0]
     ev_slot = ev_env.ev_action_indices()[0]

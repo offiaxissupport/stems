@@ -1,18 +1,4 @@
 #!/usr/bin/env python3
-"""Train the STEMS agent (Algorithm 2) on real CityLearn.
-
-One on-policy update per full-year episode: collect a trajectory under the
-current policy + CBF shield, then do a single constrained actor-critic update.
-
-Every run records ground-truth metadata (env_type, active tricks, seed,
-per-building battery soc_rate) into ``training_history.json`` so no result is
-ambiguous about which code path produced it.
-
-Usage:
-    .venv/Scripts/python train.py --episodes 15 --seed 0
-    .venv/Scripts/python train.py --smoke            # fast pipeline check
-    .venv/Scripts/python train.py --mock             # synthetic; not for results
-"""
 
 from __future__ import annotations
 
@@ -70,7 +56,6 @@ def parse_args() -> argparse.Namespace:
 def evaluate_episode(agent: STEMSAgent, env: STEMSEnvironment, config: STEMSConfig,
                      soc_rate: np.ndarray, max_steps: int = 0,
                      count_soc: bool = True) -> Dict[str, float]:
-    """Deterministic rollout; return the full Table-I metric dict."""
     hist = HistoryBuffer(env.num_buildings, env.obs_dim, config.transformer.window_size)
     metrics = MetricsCalculator(env.num_buildings, config.cbf, soc_rate=soc_rate,
                                 heating_setpoint_idx=env.heating_setpoint_idx,
@@ -99,11 +84,6 @@ def train(args: argparse.Namespace) -> None:
     config.training.episodes = args.episodes
     if args.no_pid:
         config.lagrangian.use_pid = False
-    # Isolating the heat pump and/or DHW without the dual-setpoint heat-pump
-    # physics would train against the wrong comfort model, so imply it here.
-    # Any mode that drives the bidirectional HVAC actuator must also use the
-    # season-aware dual-setpoint comfort model, or it trains against the wrong
-    # physics -- see the comfort term in stems/reward.py.
     heat_pump = args.heat_pump or (
         "cooling_or_heating_device" in ACTION_GROUPS.get(args.isolate, []))
     if heat_pump:
@@ -118,8 +98,6 @@ def train(args: argparse.Namespace) -> None:
     battery = env.battery_info()
     soc_rate = battery["soc_rate"]
     control_indices = env.resolve_control_indices(args.isolate)
-    # The SOC barrier/metric is meaningless once the battery is frozen at no-op
-    # (see CBFShield.enforce_soc) -- exclude it from the reported violation rate.
     count_soc = (control_indices is None
                 or env.electrical_storage_action_index in control_indices)
     print(f"[STEMS] env_type={env.env_type}  B={B}  obs_dim={env.obs_dim}  "
@@ -184,7 +162,7 @@ def train(args: argparse.Namespace) -> None:
             obs_window = hist.get()
             actions = agent.select_action(obs_list, obs_window, explore=True)
             next_obs, _, terminated, truncated, _ = env.step(actions)
-            agent.observe(next_obs)      # online DHW demand climatology (causal)
+            agent.observe(next_obs)
             steps += 1
             done = terminated or truncated or (args.max_steps and steps >= args.max_steps)
 
@@ -192,7 +170,6 @@ def train(args: argparse.Namespace) -> None:
             prev_net = [float(o[_IDX_NET]) for o in next_obs]
             ep_metrics.add_step(obs_list, actions, next_obs)
 
-            # Observed post-step constraint costs (B,3): k=0 SOC, k=1 power, k=2 grid.
             soc_n = np.array([o[_IDX_SOC] for o in next_obs], dtype=np.float32)
             net_n = np.array([o[_IDX_NET] for o in next_obs], dtype=np.float32)
             c_soc = ((soc_n < config.cbf.SOC_min) | (soc_n > config.cbf.SOC_max)).astype(np.float32)

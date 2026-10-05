@@ -1,11 +1,4 @@
 #!/usr/bin/env python3
-"""Table of the controllers-under-a-binding-cap grid (EV schema).
-
-One row per arm and scenario, learning arms averaged over their seeds. With two
-scenarios there is nothing to test; the table reports what was measured.
-
-    .venv/Scripts/python -m experiments.ev_rl_report results/ev_rl_v1
-"""
 
 from __future__ import annotations
 

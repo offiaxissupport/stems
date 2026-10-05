@@ -1,53 +1,4 @@
 #!/usr/bin/env python3
-"""Coupling study: what a shared grid cap does to a fleet of deadline-locked EVs.
-
-Question
---------
-Per-device barriers are feasibility-guaranteed in isolation. A fleet behind one
-connection is not: meeting every departure deadline requires
-
-    sum_i (s_req_i - s_i) * C_i / eta_i  <=  P_cap * dt * T                  (*)
-
-and when (*) fails the safe set is empty -- no action sequence satisfies every
-deadline and the cap. This study sweeps the cap from slack to severely binding
-and measures, at each level:
-
-  1. how often (*) fails,
-  2. how many vehicles depart below their required state of charge,
-  3. how much of the resulting power violation is *avoidable* by control at all.
-
-It also compares two ways of handling the shared cap:
-
-  ``independent``   each deadline barrier projects on its own. Correct per
-                    device, collectively blind to the connection.
-  ``proportional`` the shared cap is enforced, every request scaled equally.
-  ``edf``          the shared cap is enforced, allocated earliest-deadline-first.
-
-independent vs the other two measures whether enforcing the shared cap matters at
-all; proportional vs edf isolates the priority rule alone, since both enforce the
-identical total.
-
-The point of sweeping rather than picking one cap is that the two are
-*identical* wherever the constraint is slack. Any difference between them is a
-measurement of what coordination buys, and it can only appear where the shared
-constraint actually binds.
-
-Method
-------
-As in ``ablation.py`` and ``study_heatpump.py``, one seeded nominal policy is
-replayed through the real environment under each configuration, which isolates
-the shield's effect from training noise. The nominal controller is deliberately
-naive about the connection: it charges whatever is plugged in, which is what an
-uncoordinated household controller does.
-
-Environment: ``tx_travis_8b_ev`` -- 8 real Travis buildings, 6 with chargers,
-55.2 kW of aggregate charger capacity. **The vehicle schedules are synthetic**
-(see ``setup_citylearn_ev.py``); the buildings are not.
-
-Usage
------
-    .venv/Scripts/python study_coupling.py --steps 1500 --seeds 0 1
-"""
 
 from __future__ import annotations
 
@@ -68,16 +19,7 @@ SCHEMA = "citylearn_schemas/tx_travis_8b_ev/schema.json"
 _IDX_NET, _IDX_PRICE = 20, 21
 
 
-# ---------------------------------------------------------------------------
-# Building the EV barrier from the live environment
-# ---------------------------------------------------------------------------
-
 def build_ev_barrier(env: STEMSEnvironment) -> Optional[EVReadinessBarrier]:
-    """One barrier covering every building's slot-0 charger bay.
-
-    Buildings without a charger report zero power, which makes their slot inert
-    rather than silently fast -- the same treatment an empty bay receives.
-    """
     layouts = env.ev_obs_layout()
     if not layouts:
         return None
@@ -101,13 +43,6 @@ def build_ev_barrier(env: STEMSEnvironment) -> Optional[EVReadinessBarrier]:
 
 
 class FleetPolicy:
-    """An uncoordinated household controller: charge whatever is plugged in.
-
-    This is the behaviour the coupling constraint punishes. Each house acts on
-    its own vehicle with no view of the shared connection, which is exactly the
-    situation a distribution transformer sees when a street electrifies.
-    """
-
     def __init__(self, num_buildings: int, ev_slot: int, dhw_idx: int,
                  layout: Dict[str, int], seed: int = 0) -> None:
         self.B = num_buildings
@@ -126,13 +61,8 @@ class FleetPolicy:
         return a
 
 
-# ---------------------------------------------------------------------------
-# Rollout
-# ---------------------------------------------------------------------------
-
 def rollout(env: STEMSEnvironment, cap_kw: float, coordination: str,
             steps: int, seed: int) -> Dict[str, float]:
-    """Replay the fleet policy under one (cap, coordination) configuration."""
     bi = env.battery_info()
     ev_barrier = build_ev_barrier(env)
     if ev_barrier is None:
@@ -146,7 +76,7 @@ def rollout(env: STEMSEnvironment, cap_kw: float, coordination: str,
                        nominal_power=bi["nominal_power"],
                        elec_idx=env.electrical_storage_action_index,
                        safety_cfg=SafetyConfig(),
-                       enforce_soc=False,           # battery frozen: EV study
+                       enforce_soc=False,
                        deadline_barriers=[ev_barrier],
                        coordination=coordination,
                        hvac_idx=-1)
@@ -160,7 +90,7 @@ def rollout(env: STEMSEnvironment, cap_kw: float, coordination: str,
 
     obs, _ = env.reset()
     mask = np.zeros(env.action_dim, dtype=np.float32)
-    mask[ev_slot] = 1.0                              # EV-only control
+    mask[ev_slot] = 1.0
 
     infeasible_steps = 0
     total_shortfall = 0.0
@@ -200,17 +130,11 @@ def rollout(env: STEMSEnvironment, cap_kw: float, coordination: str,
         net = np.array([o[_IDX_NET] for o in next_obs], dtype=np.float32)
         total_import = float(np.maximum(net, 0.0).sum())
         peak = max(peak, total_import)
-        # The tariff of the hour just simulated is in the pre-action observation;
-        # next_obs already carries the next hour's price.
         cost += float((np.maximum(net, 0.0)
                        * np.array([o[_IDX_PRICE] for o in obs])).sum())
         if total_import > cap_kw:
             grid_violation_steps += 1
 
-        # Departure accounting: a vehicle that was connected and is not any more
-        # has left; compare the state of charge it left with against what it
-        # needed. This is the service metric -- a missed departure is a failure
-        # no later action can undo.
         conn = np.array([o[layout["connected_state"]] for o in next_obs]) > 0.5
         soc = np.array([o[layout["soc"]] for o in next_obs], dtype=np.float32)
         left = prev_conn & ~conn & owners
@@ -228,8 +152,6 @@ def rollout(env: STEMSEnvironment, cap_kw: float, coordination: str,
         if term or trunc:
             break
 
-    # How much of the violation is beyond any control: the import that remains
-    # once every controllable action is zero cannot be removed by the shield.
     return {
         "cap_kw": cap_kw,
         "coordination": coordination,
@@ -247,8 +169,6 @@ def rollout(env: STEMSEnvironment, cap_kw: float, coordination: str,
         "ev_electricity_kwh": ev_kwh,
     }
 
-
-# ---------------------------------------------------------------------------
 
 def _fmt(r: Dict[str, float]) -> str:
     return (f"  cap={r['cap_kw']:5.1f}kW {r['coordination']:>11s} | "

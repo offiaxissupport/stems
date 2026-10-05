@@ -1,8 +1,3 @@
-"""How does a trained arm charge the cars? Requested vs executed charging, by hour of
-day, from a replay of the evaluation with the saved policy (report, 6.7).
-
-    .venv/Scripts/python experiments/diagnostics/ev_rl_requests.py rl+calibrated winter 0 [results/ev_rl_v1]
-"""
 import os
 import sys
 from pathlib import Path

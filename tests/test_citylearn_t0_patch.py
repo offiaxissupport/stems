@@ -1,11 +1,3 @@
-"""The episode-start thermal double count in CityLearn, and our correction.
-
-``reset()`` books each thermal device's ideal t=0 load; the first ``step()``
-then limits the device to nominal power minus that same load. Heating asserts,
-storage charging is silently clipped. See ``stems/environment.py`` for the
-source references. Real CityLearn only; each environment takes ~20 s to build.
-"""
-
 from __future__ import annotations
 
 import os
@@ -19,8 +11,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from experiments.scenario import Scenario
 from stems.environment import STEMSEnvironment
 
-# Building 120912 needs 3.84 kWe at the first winter hour against a 4.96 kW heat
-# pump: more than half its nameplate, so the double count trips the assertion.
 CRASHING = Scenario(season="winter", subset_seed=1, days=3)
 REFERENCE = Scenario(season="winter", subset_seed=None, days=3)
 
@@ -64,7 +54,6 @@ def test_patch_holds_across_episode_resets():
 
 
 def test_full_dhw_charge_is_not_clipped_on_the_first_step():
-    """Unpatched, a full DHW charge at t=0 is cut short by exactly the booked load."""
     drawn = {}
     for patch in (False, True):
         env = _env(REFERENCE, patch=patch)

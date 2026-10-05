@@ -1,43 +1,4 @@
 #!/usr/bin/env python3
-"""Policy vs safety layer: the ablation grid for the clean evaluation phase.
-
-Arms (see ``experiments/controllers.py``)::
-
-    idle             no storage action, thermostat only: the no-control reference
-    idle+calibrated  the same through the calibrated state-of-charge barrier
-    rbc              time-of-use storage rule, no safety layer
-    rbc+calibrated   the rule through the calibrated barrier
-    rl               learned policy, no safety layer (Lagrangian pressure only)
-    rl+basic         learned policy through the barrier with the uniform 0.1
-                     battery rate of the original implementation
-    rl+calibrated    learned policy through the barrier that inverts the
-                     simulator's own battery equations
-
-``rl+calibrated`` vs ``rl`` isolates what the safety layer adds to a learned
-policy; vs ``rl+basic`` what calibration adds; vs ``idle+calibrated`` and
-``rbc+calibrated`` what learning adds over no control and over the rule.
-
-Learning arms train one policy shared by all buildings for 60 episodes by
-default. ``experiments/learning_budget.py`` is the evidence for both choices: on
-the winter reference scenario the shared policy was 7% below the no-control cost
-after 30 episodes, per-building actors 1.5%, and neither had flattened at 20.
-
-A scenario is one season's window (a single 4-week block per season: weather
-variation within a season is not sampled) on one building subset. Training seeds
-are nested inside scenarios; ``aggregate.py`` averages them within a scenario and
-treats scenarios as the replicates (see its docstring). Rule-based control is
-deterministic, so it runs once per scenario.
-
-The grid is resumable: runs already recorded with status ``ok`` by the same code
-(fingerprint) and episode count are skipped
-unless ``--force`` is given.
-
-Usage
------
-    .venv/Scripts/python -m experiments.ablation --dry-run
-    .venv/Scripts/python -m experiments.ablation --workers 6
-    .venv/Scripts/python -m experiments.aggregate results/ablation_v1
-"""
 
 from __future__ import annotations
 
@@ -55,9 +16,9 @@ REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from experiments.controllers import ARMS  # noqa: E402
-from experiments.runner import code_fingerprint, run_one  # noqa: E402
-from experiments.scenario import SEASONS, TX_SCHEMA, Scenario  # noqa: E402
+from experiments.controllers import ARMS
+from experiments.runner import code_fingerprint, run_one
+from experiments.scenario import SEASONS, TX_SCHEMA, Scenario
 
 
 def build_grid(args) -> List[Dict[str, Any]]:
@@ -84,8 +45,6 @@ def build_grid(args) -> List[Dict[str, Any]]:
 
 
 def already_done(spec: Dict[str, Any], fingerprint: str) -> bool:
-    """A finished run is reused only if the same code produced it with the same
-    number of training episodes; anything else is re-run, never mixed in."""
     path = Path(spec["out"])
     path = path if path.is_absolute() else REPO / path
     if not path.exists():
@@ -143,7 +102,6 @@ def main() -> None:
             print("   ", s["out"])
         return
 
-    # Materialise every subset schema once, in the parent, so workers never race.
     for scenario_json in {json.dumps(s["scenario"], sort_keys=True) for s in todo}:
         Scenario(**json.loads(scenario_json)).schema_path()
 

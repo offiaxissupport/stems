@@ -1,16 +1,3 @@
-"""
-Baseline agents for comparison with STEMS.
-
-    RuleBasedAgent      – TOU scheduling heuristic
-    SingleAgentSAC      – independent per-building SAC, no coordination
-    DMAPPOAgent         – distributed MAPPO with soft CBF penalty
-    MPCAgent            – linear MPC using cvxpy QP at each step
-    MADDPGAgent         – centralised critic, decentralised actors (DDPG-style)
-    MARLISAAgent        – sequential SAC (buildings take turns seeing prior actions)
-    MADCQAgent          – independent Q-networks with heuristic SOC clipping
-    MetaEMSAgent        – simplified MAML wrapper around base RL agent
-"""
-
 from __future__ import annotations
 
 import copy
@@ -25,54 +12,20 @@ import torch.optim as optim
 
 from stems.environment import thermostat_step
 
-# Observation indices (matching OBS_NAMES in environment.py)
 _IDX_HOUR = 1
 _IDX_PRICE = 21
 _IDX_SOC_ELEC = 19
 _IDX_T_IN = 15
-_IDX_LOAD = 16        # non_shiftable_load
-_IDX_SOLAR = 17       # solar_generation
-_IDX_T_COOL = 27     # indoor_dry_bulb_temperature_cooling_set_point
-_IDX_T_HEAT = 28     # indoor_dry_bulb_temperature_heating_set_point (heat_pump=True only)
+_IDX_LOAD = 16
+_IDX_SOLAR = 17
+_IDX_T_COOL = 27
+_IDX_T_HEAT = 28
 _IDX_NET = 20
 
 
-# ==========================================================================
-# Rule-Based Agent (TOU Scheduling)
-# ==========================================================================
-
 class RuleBasedAgent:
-    """Time-of-Use storage schedule plus a thermostat.
-
-    Storage (hours are CityLearn's 1..24; the tariff peaks in hours 17-21):
-
-    * charge the battery and the hot-water tank in the hours before the peak
-      (11-16), when PV is also producing;
-    * during the peak, discharge the battery only as far as the house's own
-      non-shiftable load net of PV -- exports earn nothing under this tariff, so
-      discharging faster than the house consumes gives energy away -- and let
-      the tank serve the hot-water demand.
-
-    A fixed 0.8 discharge regardless of load, with overnight charging, costs
-    *more* than leaving the storage idle (515 vs 454 over a winter week on the
-    Travis houses): most of the discharge is exported for nothing and the tank
-    is heated every night whether or not it is needed.
-
-    Heat pump: hold the comfort band with the integral thermostat of
-    ``stems.environment.thermostat_step`` and no set-point offset.
-    ``hvac_control`` must match the environment's: in ``"setpoint"`` mode the
-    environment runs the thermostat and the HVAC action is a zero offset; in
-    ``"power"`` mode the baseline runs the identical loop itself. CityLearn reads
-    the power action by sign: positive heats, negative cools. The thermostat
-    needs the heating set point (``heat_pump=True`` observations).
-
-    ``battery_nominal_power`` (kW per building, from ``env.battery_info()``)
-    converts the load into a battery action; it is required for the
-    load-following discharge.
-    """
-
-    CHARGE_HOURS = range(11, 17)      # 10:00-16:00, the six hours before the peak
-    PEAK_HOURS = range(17, 22)        # 16:00-21:00
+    CHARGE_HOURS = range(11, 17)
+    PEAK_HOURS = range(17, 22)
     CHARGE_ACTION = 0.5
     DHW_CHARGE_ACTION = 0.3
     DHW_DISCHARGE_ACTION = -0.5
@@ -84,20 +37,15 @@ class RuleBasedAgent:
             raise ValueError(f"hvac_control must be 'power' or 'setpoint', got {hvac_control!r}")
         self.B = num_buildings
         self.hvac_control = hvac_control
-        # False where the schema has no heat-pump action: the storage schedule
-        # is all there is, and the thermostat (which needs set points) is skipped.
         self.has_hvac = bool(has_hvac)
         self.p_batt = (None if battery_nominal_power is None
                        else np.asarray(battery_nominal_power, dtype=np.float32).reshape(-1))
         self.reset()
 
     def reset(self) -> None:
-        """Clear the thermostat state at the start of an episode."""
         self._u = np.zeros(self.B, dtype=np.float32)
 
     def notify_executed(self, executed: np.ndarray, hvac_idx: int = 2) -> None:
-        """Anti-windup: if a safety layer changed the power command, integrate from
-        what was actually executed, not from what was asked for."""
         if self.hvac_control == "power":
             self._u = np.asarray(executed, dtype=np.float32)[:, hvac_idx].copy()
 
@@ -119,7 +67,6 @@ class RuleBasedAgent:
         history: Optional[np.ndarray] = None,
         explore: bool = False,
     ) -> np.ndarray:
-        """Return (B, 3) actions: TOU storage schedule and the thermostat."""
         if self.p_batt is None:
             raise ValueError("RuleBasedAgent needs battery_nominal_power "
                              "(env.battery_info()['nominal_power']) for its "
@@ -132,8 +79,6 @@ class RuleBasedAgent:
             if hour in self.CHARGE_HOURS:
                 elec_action, dhw_action = self.CHARGE_ACTION, self.DHW_CHARGE_ACTION
             elif hour in self.PEAK_HOURS:
-                # This hour's non-shiftable load net of PV: what the battery can
-                # displace without exporting.
                 residual = max(float(obs[_IDX_LOAD]) - float(obs[_IDX_SOLAR]), 0.0)
                 elec_action = -min(residual / max(float(self.p_batt[i]), 1e-6), 1.0)
                 dhw_action = self.DHW_DISCHARGE_ACTION
@@ -144,7 +89,7 @@ class RuleBasedAgent:
         return actions
 
     def update(self, batch: Dict[str, Any]) -> Dict[str, float]:
-        return {}   # no learning
+        return {}
 
     def save(self, path: str) -> None:
         pass
@@ -152,10 +97,6 @@ class RuleBasedAgent:
     def load(self, path: str) -> None:
         pass
 
-
-# ==========================================================================
-# SAC helper networks
-# ==========================================================================
 
 class _SACNet(nn.Module):
     def __init__(self, input_dim: int, hidden_dim: int, output_dim: int) -> None:
@@ -171,7 +112,6 @@ class _SACNet(nn.Module):
 
 
 class _SACPolicy(nn.Module):
-    """Gaussian policy: outputs mean and log_std."""
     LOG_STD_MIN = -5
     LOG_STD_MAX = 2
 
@@ -200,17 +140,7 @@ class _SACPolicy(nn.Module):
         return action, log_prob
 
 
-# ==========================================================================
-# Single-Agent SAC (independent per building, no graph, no CBF)
-# ==========================================================================
-
 class SingleAgentSAC:
-    """Independent Soft Actor-Critic per building.
-
-    No cross-building coordination (no GCN), no safety shield.
-    Uses standard SAC with entropy regularisation.
-    """
-
     def __init__(
         self,
         obs_dim: int,
@@ -231,7 +161,6 @@ class SingleAgentSAC:
         self.alpha_ent = alpha_entropy
         self.device = torch.device(device)
 
-        # Per-building networks
         self.policies = nn.ModuleList([
             _SACPolicy(obs_dim, hidden_dim, action_dim) for _ in range(num_buildings)
         ]).to(self.device)
@@ -259,7 +188,6 @@ class SingleAgentSAC:
             for i in range(num_buildings)
         ]
 
-    # ------------------------------------------------------------------
     def select_action(
         self,
         obs_list: List[np.ndarray],
@@ -278,7 +206,6 @@ class SingleAgentSAC:
             actions[i] = np.array(a.squeeze(0).detach().tolist(), dtype=np.float32)
         return actions
 
-    # ------------------------------------------------------------------
     def update(self, batch: Dict[str, Any]) -> Dict[str, float]:
         if len(batch["obs"]) == 0:
             return {}
@@ -297,7 +224,6 @@ class SingleAgentSAC:
             rewards_b = torch.tensor(batch["rewards"][:, b], dtype=torch.float32).to(self.device)
             dones_b = torch.tensor(batch["dones"], dtype=torch.float32).to(self.device)
 
-            # Q-function update
             with torch.no_grad():
                 next_a, next_log_p = self.policies[b].sample(next_obs_b)
                 q1_next = self.q1_target[b](torch.cat([next_obs_b, next_a], dim=-1)).squeeze(-1)
@@ -314,7 +240,6 @@ class SingleAgentSAC:
             q_loss.backward()
             self.q_opts[b].step()
 
-            # Policy update
             a_new, log_p_new = self.policies[b].sample(obs_b)
             q1_new = self.q1_nets[b](torch.cat([obs_b, a_new], dim=-1)).squeeze(-1)
             q2_new = self.q2_nets[b](torch.cat([obs_b, a_new], dim=-1)).squeeze(-1)
@@ -324,7 +249,6 @@ class SingleAgentSAC:
             policy_loss.backward()
             self.policy_opts[b].step()
 
-            # Soft target update
             for param, target_param in zip(self.q1_nets[b].parameters(), self.q1_target[b].parameters()):
                 target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
             for param, target_param in zip(self.q2_nets[b].parameters(), self.q2_target[b].parameters()):
@@ -337,7 +261,6 @@ class SingleAgentSAC:
         losses["actor_loss"] /= self.B
         return losses
 
-    # ------------------------------------------------------------------
     def save(self, path: str) -> None:
         os.makedirs(path, exist_ok=True)
         torch.save(self.policies.state_dict(), os.path.join(path, "sac_policies.pt"))
@@ -349,10 +272,6 @@ class SingleAgentSAC:
         self.q1_nets.load_state_dict(torch.load(os.path.join(path, "sac_q1.pt")))
         self.q2_nets.load_state_dict(torch.load(os.path.join(path, "sac_q2.pt")))
 
-
-# ==========================================================================
-# DMAPPO with soft CBF penalty
-# ==========================================================================
 
 class _PPOActor(nn.Module):
     LOG_STD_MIN = -4
@@ -393,14 +312,6 @@ class _PPOCritic(nn.Module):
 
 
 class DMAPPOAgent:
-    """Distributed Multi-Agent PPO with soft CBF penalty.
-
-    Unlike STEMS:
-        - No GCN or Transformer encoder (uses raw observations)
-        - Soft CBF: adds λ * max(0, -h(s,a)) to reward instead of projecting
-        - PPO clip objective instead of advantage actor-critic
-    """
-
     def __init__(
         self,
         obs_dim: int,
@@ -421,7 +332,7 @@ class DMAPPOAgent:
         self.action_dim = action_dim
         self.gamma = gamma
         self.clip_eps = clip_eps
-        self.ppo_epochs = ppo_epochs  # number of PPO update epochs per batch
+        self.ppo_epochs = ppo_epochs
         self.cbf_lambda = cbf_lambda
         self.soc_min = soc_min
         self.soc_max = soc_max
@@ -442,9 +353,7 @@ class DMAPPOAgent:
             optim.Adam(self.critics[i].parameters(), lr=lr) for i in range(num_buildings)
         ]
 
-    # ------------------------------------------------------------------
     def _cbf_penalty(self, obs: np.ndarray, action: np.ndarray) -> float:
-        """Soft CBF penalty: λ * max(0, -h(s,a))."""
         soc = float(obs[_IDX_SOC_ELEC])
         delta = float(action[1]) * 0.1
         new_soc = soc + delta
@@ -453,7 +362,6 @@ class DMAPPOAgent:
         penalty = max(0.0, -h_lo) + max(0.0, -h_hi)
         return self.cbf_lambda * penalty
 
-    # ------------------------------------------------------------------
     def select_action(
         self,
         obs_list: List[np.ndarray],
@@ -474,7 +382,6 @@ class DMAPPOAgent:
             actions[i] = np.array(a.squeeze(0).detach().tolist(), dtype=np.float32)
         return actions
 
-    # ------------------------------------------------------------------
     def update(self, batch: Dict[str, Any]) -> Dict[str, float]:
         if len(batch["obs"]) == 0:
             return {}
@@ -493,12 +400,10 @@ class DMAPPOAgent:
             rewards_b = torch.tensor(batch["rewards"][:, b], dtype=torch.float32).to(self.device)
             dones_b = torch.tensor(batch["dones"], dtype=torch.float32).to(self.device)
 
-            # CBF soft penalty applied to rewards
             for n in range(N):
                 penalty = self._cbf_penalty(batch["obs"][n][b], batch["actions"][n, b])
                 rewards_b[n] -= penalty
 
-            # Critic update
             values = self.critics[b](obs_b)
             with torch.no_grad():
                 next_values = self.critics[b](next_obs_b)
@@ -510,13 +415,6 @@ class DMAPPOAgent:
             critic_loss.backward()
             self.critic_opts[b].step()
 
-            # PPO clip actor update (multi-epoch).
-            # Bug fix: old_log_prob must be computed from the policy BEFORE any
-            # gradient update, then held fixed across ppo_epochs. Computing both
-            # old and new inside the same forward pass (pre-step) gives ratio=1
-            # always, making the clip dead. We now compute old_log_prob once with
-            # no_grad, then iterate: after the first step() the actor weights
-            # change, so subsequent epochs produce ratio != 1 and the clip fires.
             adv = advantages.detach()
             with torch.no_grad():
                 old_log_prob = self.actors[b].log_prob(obs_b, actions_b)
@@ -539,7 +437,6 @@ class DMAPPOAgent:
         losses["critic_loss"] /= self.B
         return losses
 
-    # ------------------------------------------------------------------
     def save(self, path: str) -> None:
         os.makedirs(path, exist_ok=True)
         torch.save(self.actors.state_dict(), os.path.join(path, "ppo_actors.pt"))
@@ -550,18 +447,7 @@ class DMAPPOAgent:
         self.critics.load_state_dict(torch.load(os.path.join(path, "ppo_critics.pt")))
 
 
-# ==========================================================================
-# MPC Agent – linear Model Predictive Control
-# ==========================================================================
-
 class MPCAgent:
-    """Rolling-horizon linear MPC using cvxpy.
-
-    Solves a QP to minimise electricity cost + comfort penalty over a
-    short prediction horizon, subject to SOC dynamics and power limits.
-    Falls back to a rule-based heuristic if cvxpy is unavailable.
-    """
-
     def __init__(
         self,
         num_buildings: int = 3,
@@ -580,10 +466,10 @@ class MPCAgent:
         self.soc_max = soc_max
         self.P_building_max = P_building_max
         self.P_grid_max = P_grid_max
-        self.eta = eta  # SOC update coefficient
+        self.eta = eta
 
         try:
-            import cvxpy  # noqa: F401
+            import cvxpy
             self._has_cvxpy = True
         except ImportError:
             self._has_cvxpy = False
@@ -606,11 +492,9 @@ class MPCAgent:
             soc = float(obs[_IDX_SOC_ELEC])
             price = max(float(obs[_IDX_PRICE]), 1e-6)
 
-            # Decision variable: electrical storage actions over horizon
             u = cp.Variable(H)
             soc_traj = soc + self.eta * cp.cumsum(u)
 
-            # Cost: electricity * price (simplified linear model)
             cost = cp.sum(cp.multiply(price, cp.pos(u)))
 
             constraints = [
@@ -635,7 +519,6 @@ class MPCAgent:
         return actions
 
     def _fallback(self, obs_list: List[np.ndarray]) -> np.ndarray:
-        """Simple rule when cvxpy is unavailable."""
         actions = np.zeros((self.B, self.action_dim), dtype=np.float32)
         for i, obs in enumerate(obs_list):
             soc = float(obs[_IDX_SOC_ELEC])
@@ -656,10 +539,6 @@ class MPCAgent:
         pass
 
 
-# ==========================================================================
-# MADDPG – Multi-Agent DDPG with centralised critic
-# ==========================================================================
-
 class _DDPGActor(nn.Module):
     def __init__(self, obs_dim: int, hidden_dim: int, action_dim: int) -> None:
         super().__init__()
@@ -674,9 +553,6 @@ class _DDPGActor(nn.Module):
 
 
 class MADDPGAgent:
-    """Multi-Agent DDPG: centralised critic seeing all agents' obs+actions,
-    decentralised actors using only local observations."""
-
     def __init__(
         self,
         obs_dim: int,
@@ -697,13 +573,11 @@ class MADDPGAgent:
         self.noise_std = noise_std
         self.device = torch.device(device)
 
-        # Decentralised actors
         self.actors = nn.ModuleList([
             _DDPGActor(obs_dim, hidden_dim, action_dim) for _ in range(num_buildings)
         ]).to(self.device)
         self.actors_target = copy.deepcopy(self.actors).to(self.device)
 
-        # Centralised critics: input = all obs + all actions
         cent_input_dim = num_buildings * (obs_dim + action_dim)
         self.critics = nn.ModuleList([
             _SACNet(cent_input_dim, hidden_dim, 1) for _ in range(num_buildings)
@@ -740,7 +614,6 @@ class MADDPGAgent:
         N = len(batch["obs"])
         losses = {"actor_loss": 0.0, "critic_loss": 0.0}
 
-        # Build joint obs / actions tensors
         all_obs = []
         all_next_obs = []
         all_actions = []
@@ -761,11 +634,10 @@ class MADDPGAgent:
             per_obs.append(o_b)
             per_next_obs.append(no_b)
 
-        joint_obs = torch.cat(all_obs, dim=-1)              # (N, B*obs)
-        joint_actions = torch.cat(all_actions, dim=-1)       # (N, B*action)
+        joint_obs = torch.cat(all_obs, dim=-1)
+        joint_actions = torch.cat(all_actions, dim=-1)
         joint_obs_actions = torch.cat([joint_obs, joint_actions], dim=-1)
 
-        # Target actions for next state
         with torch.no_grad():
             next_target_actions = []
             for b in range(self.B):
@@ -779,7 +651,6 @@ class MADDPGAgent:
         for b in range(self.B):
             rewards_b = torch.tensor(batch["rewards"][:, b], dtype=torch.float32).to(self.device)
 
-            # Critic update
             with torch.no_grad():
                 q_next = self.critics_target[b](joint_next).squeeze(-1)
                 q_target = rewards_b + self.gamma * (1 - dones_t) * q_next
@@ -791,7 +662,6 @@ class MADDPGAgent:
             critic_loss.backward()
             self.critic_opts[b].step()
 
-            # Actor update: replace agent b's action with current policy output
             new_actions = list(all_actions)
             new_actions[b] = self.actors[b](per_obs[b])
             joint_new_actions = torch.cat(new_actions, dim=-1)
@@ -805,7 +675,6 @@ class MADDPGAgent:
             losses["actor_loss"] += actor_loss.item()
             losses["critic_loss"] += critic_loss.item()
 
-        # Soft target updates
         for b in range(self.B):
             for p, tp in zip(self.actors[b].parameters(), self.actors_target[b].parameters()):
                 tp.data.copy_(self.tau * p.data + (1 - self.tau) * tp.data)
@@ -826,18 +695,7 @@ class MADDPGAgent:
         self.critics.load_state_dict(torch.load(os.path.join(path, "maddpg_critics.pt")))
 
 
-# ==========================================================================
-# MARLISA – Sequential SAC (buildings take turns)
-# ==========================================================================
-
 class MARLISAAgent:
-    """Multi-Agent RL with Iterative Sequential Action Selection (MARLISA).
-
-    Each building selects its action sequentially, conditioned on previous
-    buildings' chosen actions in the current step.  Uses per-building SAC
-    with augmented observations that include previous agents' actions.
-    """
-
     def __init__(
         self,
         obs_dim: int,
@@ -858,8 +716,6 @@ class MARLISAAgent:
         self.alpha_ent = alpha_entropy
         self.device = torch.device(device)
 
-        # Augmented input: own obs + previous buildings' actions
-        # Building i sees obs_dim + i * action_dim inputs
         self.policies = nn.ModuleList()
         self.q1_nets = nn.ModuleList()
         self.q2_nets = nn.ModuleList()
@@ -885,7 +741,6 @@ class MARLISAAgent:
         ]
 
     def _augment_obs(self, obs: np.ndarray, prev_actions: np.ndarray) -> np.ndarray:
-        """Concatenate obs with flattened previous-agent actions."""
         return np.concatenate([obs, prev_actions.flatten()])
 
     def select_action(
@@ -916,7 +771,6 @@ class MARLISAAgent:
         losses = {"actor_loss": 0.0, "critic_loss": 0.0}
 
         for b in range(self.B):
-            # Build augmented observations with previous agents' actions
             obs_aug = []
             next_obs_aug = []
             for n in range(N):
@@ -930,7 +784,6 @@ class MARLISAAgent:
             rewards_b = torch.tensor(batch["rewards"][:, b], dtype=torch.float32).to(self.device)
             dones_b = torch.tensor(batch["dones"], dtype=torch.float32).to(self.device)
 
-            # Q update
             with torch.no_grad():
                 next_a, next_lp = self.policies[b].sample(next_obs_b)
                 q1n = self.q1_target[b](torch.cat([next_obs_b, next_a], -1)).squeeze(-1)
@@ -946,7 +799,6 @@ class MARLISAAgent:
             q_loss.backward()
             self.q_opts[b].step()
 
-            # Policy update
             a_new, lp_new = self.policies[b].sample(obs_b)
             q1n_ = self.q1_nets[b](torch.cat([obs_b, a_new], -1)).squeeze(-1)
             q2n_ = self.q2_nets[b](torch.cat([obs_b, a_new], -1)).squeeze(-1)
@@ -955,7 +807,6 @@ class MARLISAAgent:
             p_loss.backward()
             self.policy_opts[b].step()
 
-            # Target update
             for p, tp in zip(self.q1_nets[b].parameters(), self.q1_target[b].parameters()):
                 tp.data.copy_(self.tau * p.data + (1 - self.tau) * tp.data)
             for p, tp in zip(self.q2_nets[b].parameters(), self.q2_target[b].parameters()):
@@ -978,17 +829,7 @@ class MARLISAAgent:
         self.q1_nets.load_state_dict(torch.load(os.path.join(path, "marlisa_q1.pt")))
 
 
-# ==========================================================================
-# MADCQ – Multi-Agent Deep Constrained Q-learning
-# ==========================================================================
-
 class MADCQAgent:
-    """Independent DQN-style agents with heuristic SOC clipping (no QP).
-
-    Uses discrete action binning mapped back to continuous space,
-    with a simple constraint: clip actions that would violate SOC bounds.
-    """
-
     def __init__(
         self,
         obs_dim: int,
@@ -1015,7 +856,6 @@ class MADCQAgent:
         self.eta = eta
         self.device = torch.device(device)
 
-        # Per-building Q-networks over discretised action bins
         total_actions = n_bins ** action_dim
         self.q_nets = nn.ModuleList([
             _SACNet(obs_dim, hidden_dim, total_actions) for _ in range(num_buildings)
@@ -1026,14 +866,12 @@ class MADCQAgent:
             optim.Adam(self.q_nets[i].parameters(), lr=lr) for i in range(num_buildings)
         ]
 
-        # Precompute discrete action grid
         bins = np.linspace(-1.0, 1.0, n_bins)
         grids = np.meshgrid(*[bins] * action_dim, indexing="ij")
         self._action_table = np.stack([g.ravel() for g in grids], axis=-1).astype(np.float32)
         self._epsilon = 0.1
 
     def _soc_clamp(self, action: np.ndarray, soc: float) -> np.ndarray:
-        """Clamp electrical storage action to stay within SOC limits."""
         a = action.copy()
         elec = a[1]
         new_soc = soc + self.eta * elec
@@ -1064,7 +902,6 @@ class MADCQAgent:
         return actions
 
     def _action_to_idx(self, action: np.ndarray) -> int:
-        """Map continuous action to nearest discrete index."""
         dists = np.linalg.norm(self._action_table - action, axis=-1)
         return int(np.argmin(dists))
 
@@ -1085,13 +922,11 @@ class MADCQAgent:
             rewards_b = torch.tensor(batch["rewards"][:, b], dtype=torch.float32).to(self.device)
             dones_b = torch.tensor(batch["dones"], dtype=torch.float32).to(self.device)
 
-            # Map actions to indices
             action_indices = torch.tensor(
                 [self._action_to_idx(batch["actions"][n, b]) for n in range(N)],
                 dtype=torch.long,
             ).to(self.device)
 
-            # Q-learning update
             q_vals = self.q_nets[b](obs_b)
             q_pred = q_vals.gather(1, action_indices.unsqueeze(1)).squeeze(1)
 
@@ -1104,7 +939,6 @@ class MADCQAgent:
             q_loss.backward()
             self.optimizers[b].step()
 
-            # Target update
             for p, tp in zip(self.q_nets[b].parameters(), self.q_targets[b].parameters()):
                 tp.data.copy_(self.tau * p.data + (1 - self.tau) * tp.data)
 
@@ -1121,18 +955,7 @@ class MADCQAgent:
         self.q_nets.load_state_dict(torch.load(os.path.join(path, "madcq_q.pt")))
 
 
-# ==========================================================================
-# MetaEMS – Simplified MAML wrapper
-# ==========================================================================
-
 class MetaEMSAgent:
-    """Model-Agnostic Meta-Learning (MAML) wrapper around independent SAC.
-
-    Performs an inner-loop adaptation step on a fresh batch before
-    the outer-loop policy update, allowing fast adaptation to new
-    building/weather conditions.
-    """
-
     def __init__(
         self,
         obs_dim: int,
@@ -1155,7 +978,6 @@ class MetaEMSAgent:
         self.lr_inner = lr_inner
         self.device = torch.device(device)
 
-        # Base SAC agent which we meta-learn over
         self._base = SingleAgentSAC(
             obs_dim=obs_dim,
             action_dim=action_dim,
@@ -1177,31 +999,25 @@ class MetaEMSAgent:
         return self._base.select_action(obs_list, history, explore)
 
     def update(self, batch: Dict[str, Any]) -> Dict[str, float]:
-        """MAML-style update: clone → inner adapt → outer update."""
         if len(batch["obs"]) == 0:
             return {}
 
         N = len(batch["obs"])
         half = max(1, N // 2)
 
-        # Split batch: support set for inner loop, query set for outer loop
         support = {k: v[:half] if hasattr(v, '__getitem__') else v for k, v in batch.items()}
         query = {k: v[half:] if hasattr(v, '__getitem__') else v for k, v in batch.items()}
 
-        # Save current params
         saved_states = {
             "policies": copy.deepcopy(self._base.policies.state_dict()),
             "q1": copy.deepcopy(self._base.q1_nets.state_dict()),
             "q2": copy.deepcopy(self._base.q2_nets.state_dict()),
         }
 
-        # Inner loop: one gradient step on support set
         self._base.update(support)
 
-        # Outer loop: update on query set with adapted params
         losses = self._base.update(query)
 
-        # MAML: interpolate between adapted and original params (first-order approx)
         beta = 0.5
         for name, param in self._base.policies.named_parameters():
             if name in saved_states["policies"]:

@@ -1,44 +1,4 @@
 #!/usr/bin/env python3
-"""CTDE vs DTDE: does inter-building information help, and when?
-
-Question
---------
-E9 (``study_coupling.py``) measured the shared grid constraint and compared
-allocation rules *inside the safety layer*. It trained nothing. This study asks
-the learning question that E9 made well-posed:
-
-    when a shared constraint binds, does letting the policy see its neighbours
-    improve the outcome -- and does that advantage disappear when the constraint
-    is slack?
-
-Design
-------
-The two arms differ by exactly one knob. The spatial encoder is a graph
-convolution that adds self-loops before normalising, so setting the adjacency to
-zero leaves each building encoding only itself:
-
-    graph on  (CTDE-like)  adjacency = building similarity graph, Eq. 11
-    graph off (DTDE)       adjacency = 0  =>  A_hat = I
-
-Everything else is identical: same architecture, same parameter count, same
-optimiser, same seeds, same reward, same barriers. Any difference is
-attributable to inter-building information flow and nothing else.
-
-The safety shield runs in ``independent`` mode -- no shared-cap allocation -- so
-that any coordination must be *learned* rather than supplied by the shield. The
-Lagrangian cost critics supply the pressure to avoid violations.
-
-Each arm is trained at several grid caps, from slack to binding. The prediction
-under test is that the arms coincide where the cap is slack and separate where it
-binds. E9 located that regime at roughly 20-45 kW for this fleet.
-
-Environment: ``tx_travis_8b_ev`` -- 8 real Travis buildings, 6 with chargers.
-**Vehicle schedules are synthetic** (see ``setup_citylearn_ev.py``).
-
-Usage
------
-    .venv/Scripts/python study_ctde.py --episodes 8 --steps 1200 --seeds 0 1
-"""
 
 from __future__ import annotations
 
@@ -60,8 +20,6 @@ from stems.reward import STEMSReward
 from stems.utils import EpisodeBuffer, HistoryBuffer, set_seed
 
 SCHEMA = "citylearn_schemas/tx_travis_8b_ev/schema.json"
-# Charger min/max power ratio: actions below this are floored to the same
-# output by CityLearn, so the environment response is flat across [0, DEADBAND].
 DEADBAND = 1.4 / 11.0
 _IDX_SOC, _IDX_NET = 19, 20
 
@@ -84,7 +42,6 @@ def build_ev_barrier(env: STEMSEnvironment) -> EVReadinessBarrier:
 
 
 def departure_stats(records: List[Dict[str, np.ndarray]]) -> Dict[str, float]:
-    """Missed departures from a sequence of per-step connection snapshots."""
     departures = missed = 0
     for prev, cur in zip(records[:-1], records[1:]):
         left = prev["connected"] & ~cur["connected"] & prev["owner"]
@@ -98,24 +55,19 @@ def departure_stats(records: List[Dict[str, np.ndarray]]) -> Dict[str, float]:
 
 def run_arm(cap_kw: float, graph_on: bool, seed: int, episodes: int,
             steps: int, schema: str, use_barrier: bool = True) -> Dict[str, Any]:
-    """Train one arm and evaluate it deterministically."""
     set_seed(seed)
     config = STEMSConfig()
     config.cbf = CBFConfig(P_grid_max=cap_kw, P_building_max=cap_kw)
     config.heat_pump.enabled = True
     config.thermal = ThermalConfig(dhw_readiness=False, weather_anticipation=False,
                                    cop_aware_power=False)
-    # The deadline barrier emits exactly 0 whenever charging is not yet urgent,
-    # so regressing the actor onto the executed action would train it toward
-    # that constant. Learn from the policy's own sample instead, treating the
-    # shield as part of the environment.
     config.training.actor_target = "raw"
 
     env = STEMSEnvironment(schema=schema, seed=seed, heat_pump=True)
     B = env.num_buildings
     battery = env.battery_info()
     ev_slot = env.ev_action_indices()[0]
-    control_indices = [ev_slot]                      # EVs are the coupled load
+    control_indices = [ev_slot]
     ev_barrier = build_ev_barrier(env)
     layout_for_reward = env.ev_obs_layout()[0]
 
@@ -127,11 +79,8 @@ def run_arm(cap_kw: float, graph_on: bool, seed: int, episodes: int,
                        control_indices=control_indices,
                        deadline_barriers=([ev_barrier] if use_barrier else None),
                        hvac_action_index=-1)
-    # The single knob. Zeroing the adjacency leaves A_hat = I in the graph
-    # convolution, so each building's representation depends only on itself.
     if not graph_on:
         agent.adj = torch.zeros_like(agent.adj)
-    # Coordination must be learned, not supplied by the shield.
     agent.cbf.coordination = "independent"
     agent.cbf.enforce_soc = False
 
@@ -176,7 +125,7 @@ def run_arm(cap_kw: float, graph_on: bool, seed: int, episodes: int,
             net_n = np.array([o[_IDX_NET] for o in nxt], dtype=np.float32)
             total = float(np.maximum(net_n, 0).sum())
             viol += int(total > cap_kw)
-            c_soc = np.zeros(B, np.float32)          # battery not controlled
+            c_soc = np.zeros(B, np.float32)
             c_pow = (np.abs(net_n) > cap_kw).astype(np.float32)
             c_grid = np.full(B, float(total > cap_kw), np.float32)
             costs = np.stack([c_soc, c_pow, c_grid], axis=-1)
@@ -193,11 +142,6 @@ def run_arm(cap_kw: float, graph_on: bool, seed: int, episodes: int,
             obs = nxt
 
         agent.update(buffer.get_batch())
-        # Diagnostic that matters here: the charger floors any action below
-        # min_charging_power/max_charging_power (0.127 on this hardware) to the
-        # same output, so the response is FLAT across that band. A policy whose
-        # actions all fall inside it cannot influence the environment at all,
-        # and no architecture comparison run on such a policy means anything.
         acts = np.array(ep_actions, dtype=np.float32)
         above = float((acts > DEADBAND).mean())
         train_curve.append({"episode": ep, "reward": ep_reward,
@@ -209,7 +153,6 @@ def run_arm(cap_kw: float, graph_on: bool, seed: int, episodes: int,
               f"viol={viol / max(n,1):.3f}  |a|={np.abs(acts).mean():.3f}  "
               f"above_deadband={above:.3f}  ({time.time()-t0:.0f}s)", flush=True)
 
-    # ---- deterministic evaluation -------------------------------------
     obs, _ = env.reset()
     hist.reset(); hist.update(obs)
     metrics = MetricsCalculator(B, config.cbf, soc_rate=battery["soc_rate"],
@@ -281,7 +224,6 @@ def main() -> None:
                       f"peak={r['eval_peak_kw']:.1f}  cost={r['eval_cost']:.0f}\n",
                       flush=True)
 
-    # -- aggregate -------------------------------------------------------
     print("\n" + "=" * 78)
     print(f"{'cap':>6} {'graph':>6} {'missed rate':>13} {'viol':>8} {'peak':>8} {'cost':>10}")
     print("-" * 78)

@@ -1,45 +1,3 @@
-"""Controllers compared in the ablation, built the same way for every arm.
-
-Each arm combines a policy with a safety layer.
-
-Policies
-    ``idle``  no storage action and a zero set-point offset: the house runs on its
-              thermostat alone. This is the no-control reference.
-    ``rbc``   the time-of-use storage rule of ``stems.baselines.RuleBasedAgent``.
-    ``rl``    the learned policy (``stems.agent.STEMSAgent``). ``rl-res`` arms learn
-              a bounded correction on the ``rbc`` rule (residual policy learning);
-              ``+pen`` arms pay for every shield intervention; ``+own`` arms pay
-              for the vehicle charging the cap shield has to force.
-    ``hp-shift`` / ``rl-hp``
-              heat-pump-only control (the set-point offset and nothing else):
-              a fixed pre-condition-and-coast schedule, and the learned policy
-              with the battery and hot-water tank held idle.
-
-On a schema with chargers the ``rbc`` arms also say how the cars ask
-(``ev_request``): on arrival, outside the tariff peak, or never (the shield
-alone must then get them charged -- what a policy that leans on it does).
-
-Safety layers (the state-of-charge barrier; the grid and building power caps of
-the default scenario never bind, so they are not what these arms differ in)
-    ``none``        the policy's action is executed as is.
-    ``basic``       the barrier as originally implemented: a linear battery model
-                    with one uniform rate (0.1 state of charge per unit action) for
-                    every building.
-    ``linear``      the barrier of the STEMS paper (its Eq. 16): each battery's own
-                    capacity and power, but the lossless update
-                    ``SOC' = SOC + a * dt / capacity`` -- no efficiency, no power
-                    taper, no standby loss.
-    ``calibrated``  the same barrier inverting the simulator's own battery
-                    equations per building (``stems.battery.BatteryModel``).
-
-``basic`` and ``calibrated`` differ in the battery model and nothing else: no
-margins, buffers, hot-water or efficiency terms are bundled into either, so the
-contrast between them measures calibration alone.
-
-The learned policy's Lagrangian cost critics belong to the learning algorithm and
-stay active in every learned arm, including ``rl`` without a shield.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -49,19 +7,8 @@ from stems.baselines import RuleBasedAgent
 
 import numpy as np
 
-UNCALIBRATED_SOC_RATE = 0.1   # the uniform constant of the original implementation
+UNCALIBRATED_SOC_RATE = 0.1
 
-# The cap shield of the controllers (``stems.fleet.FleetShield``): every departure
-# is planned one hour early, and the later hours of its plan are held to the
-# day-ahead forecast's own error margin. Chosen on the winter and summer
-# *training* windows with a controller that never asks to charge (the hardest
-# case for the shield; second week scored, first week as forecast history), by
-# fewest missed departures and then cost. Missed of 66 (winter + summer):
-#     reserve 0 / 1 / 2 h, one-hour margin only:   16 / 4 / 1
-#     reserve 0 / 1 / 2 h, with the later margin:   2 / 0 / 0   (cost 1015 at 1 h, 1024 at 2 h)
-# With cars that ask off-peak no setting misses a departure. The evaluation
-# windows were not used for the choice -- and on them it does not make a
-# controller that never asks safe: see docs/REPORT_2026-10.md, 6.8.
 RESERVE_HOURS = 1
 LEAD_MARGIN = True
 
@@ -71,14 +18,14 @@ RBC_ACTIONS = ["dhw_storage", "electrical_storage", "cooling_or_heating_device"]
 @dataclass(frozen=True)
 class Arm:
     name: str
-    policy: str    # "idle" | "rbc" | "rl"
-    barrier: str   # "none" | "basic" | "calibrated"
-    residual: bool = False     # rl only: the policy corrects the time-of-use rule
-    penalty: float = 0.0       # rl only: weight of the shield-intervention penalty
-    ev_request: str = "asap"   # rbc on a schema with chargers: "asap" | "offpeak" | "never"
-    forced_penalty: float = 0.0   # rl only: reward lost per kWh of charging the shield forces
-    ev_floor: float = 0.0      # rl only: least share of the off-peak default the charger is asked for
-    control: Optional[Tuple[str, ...]] = None   # rl only: the actuators it drives (None: all)
+    policy: str
+    barrier: str
+    residual: bool = False
+    penalty: float = 0.0
+    ev_request: str = "asap"
+    forced_penalty: float = 0.0
+    ev_floor: float = 0.0
+    control: Optional[Tuple[str, ...]] = None
 
     @property
     def learns(self) -> bool:
@@ -96,27 +43,16 @@ ARMS: Dict[str, Arm] = {a.name: a for a in (
     Arm("rl+calibrated", "rl", "calibrated"),
     Arm("rl-res+calibrated", "rl", "calibrated", residual=True),
     Arm("rl+calibrated+pen", "rl", "calibrated", penalty=1.0),
-    # How the cars ask, with the same house rule and shields.
     Arm("rbc-offpeak+calibrated", "rbc", "calibrated", ev_request="offpeak"),
     Arm("rbc-never+calibrated", "rbc", "calibrated", ev_request="never"),
-    # The policy pays the off-peak tariff again for every kWh the shield forces.
     Arm("rl+calibrated+own", "rl", "calibrated", forced_penalty=0.22),
-    # The policy may ask the charger for more than the off-peak default, never
-    # for less than half of it: it cannot leave the cars to the shield.
     Arm("rl+calibrated+floor", "rl", "calibrated", ev_floor=0.5),
-    # Heat-pump-only control.
     Arm("hp-shift", "hp-shift", "none"),
     Arm("rl-hp", "rl", "none", control=("cooling_or_heating_device",)),
 )}
 
 
 class RuleColumns:
-    """The time-of-use rule on a schema that has only some of its three devices.
-
-    ``RuleBasedAgent`` returns (hot-water storage, battery, heat pump); this keeps
-    the columns the environment has, in the environment's order.
-    """
-
     def __init__(self, rule, names) -> None:
         self.rule = rule
         self.columns = [RBC_ACTIONS.index(n) for n in names]
@@ -125,19 +61,13 @@ class RuleColumns:
         self.rule.reset()
 
     def notify_executed(self, executed: np.ndarray) -> None:
-        return None                      # no heat-pump command to keep in step with
+        return None
 
     def select_action(self, obs_list, history=None, explore: bool = False) -> np.ndarray:
         return self.rule.select_action(obs_list, history, explore)[:, self.columns]
 
 
 class EVRule:
-    """A house rule plus "charge the car whenever it is plugged in and short".
-
-    The uncoordinated behaviour a street of chargers has by default: each house
-    asks for full power for its own vehicle, with no view of the shared cap.
-    """
-
     def __init__(self, house, action_dim: int, ev_index: int, layout: Dict[str, int],
                  ev_request: str = "asap") -> None:
         if ev_request not in ("asap", "offpeak", "never"):
@@ -168,17 +98,6 @@ class EVRule:
 
 
 class ChargerFloor:
-    """The least the charger is asked for, whatever the policy outputs.
-
-    ``fraction`` of full power whenever a connected car is short of its
-    requirement and the tariff is off-peak (the ``offpeak`` request of
-    ``EVRule``); no floor on any other actuator. A policy behind a deadline
-    shield pays nothing for never charging a car -- the shield charges it at the
-    last feasible moment, which is the cheapest and, without foresight, not safe.
-    With the floor the policy can ask for more or earlier, not for less, so the
-    shield is left with corrections rather than with the whole job.
-    """
-
     def __init__(self, action_dim: int, ev_index: int, layout: Dict[str, int],
                  fraction: float) -> None:
         if not 0.0 < fraction <= 1.0:
@@ -193,16 +112,7 @@ class ChargerFloor:
 
 
 class SetpointShiftPolicy:
-    """Heat-pump-only schedule: pre-condition in the four hours before the tariff
-    peak, coast through it, the thermostat's own set point otherwise.
-
-    The action is the set-point offset (the environment's ``setpoint`` control);
-    "pre-condition" is warmer when the heat pump is heating and cooler when it
-    is cooling, which is read from the sign of the action the thermostat last
-    executed. Storage is not touched.
-    """
-
-    PREP_HOURS = range(13, 17)        # 12:00-16:00
+    PREP_HOURS = range(13, 17)
 
     def __init__(self, env) -> None:
         if env.hvac_control != "setpoint":
@@ -222,8 +132,6 @@ class SetpointShiftPolicy:
 
 
 class IdlePolicy:
-    """Zero action: storage untouched, thermostat at its set point."""
-
     def __init__(self, num_buildings: int, action_dim: int) -> None:
         self.shape = (num_buildings, action_dim)
 
@@ -232,8 +140,6 @@ class IdlePolicy:
 
 
 class PlainController:
-    """A non-learning controller exposing the same interface as ``STEMSAgent``."""
-
     def __init__(self, base) -> None:
         self.base = base
         self._last_raw_actions: Optional[np.ndarray] = None
@@ -259,8 +165,6 @@ class PlainController:
 
 
 class ShieldedController(PlainController):
-    """A non-learning controller whose actions pass through a safety shield."""
-
     def __init__(self, base, shield, dhw_barrier=None, fleet_shield=None) -> None:
         super().__init__(base)
         self.shield = shield
@@ -274,11 +178,10 @@ class ShieldedController(PlainController):
             safe = self.fleet_shield.project(safe, obs_list)
         self._last_raw_actions, self._last_safe_actions = raw.copy(), safe.copy()
         if hasattr(self.base, "notify_executed"):
-            self.base.notify_executed(safe)      # anti-windup for a stateful base
+            self.base.notify_executed(safe)
         return safe
 
     def observe(self, next_obs_list, ev_draw_kwh=None) -> None:
-        # The hot-water requirement is estimated online; it must see every step.
         forecaster = getattr(self.dhw_barrier, "forecaster", None)
         if forecaster is not None:
             forecaster.update(next_obs_list)
@@ -287,7 +190,6 @@ class ShieldedController(PlainController):
 
 
 def safety_layer(barrier: str, env):
-    """(safety config, battery model the barrier inverts) for a barrier name."""
     from stems.battery import BatteryModel
     from stems.config import SafetyConfig
 
@@ -305,7 +207,6 @@ def safety_layer(barrier: str, env):
 
 
 def build_controller(arm: Arm, env, config):
-    """Construct the controller for ``arm``, calibrated from ``env``."""
     from stems.agent import STEMSAgent
     from stems.cbf import CBFShield
     from stems.graph import BuildingGraph
@@ -335,15 +236,6 @@ def build_controller(arm: Arm, env, config):
                       ev_request=arm.ev_request)
 
     def fleet(barrier):
-        """The cap shield of a shielded arm on a schema with chargers: the
-        joint-feasibility programme under the scenario's grid cap, with a causal
-        load forecast (a learning controller changes the load it must fit around).
-
-        It owns the shared cap for the vehicles *and* the house's battery and
-        hot-water tank, so the
-        state-of-charge barrier's own grid guard -- which predicts from the last
-        hour's net load, vehicle charging included -- is switched off.
-        """
         if not ev_indices or arm.barrier == "none":
             return None
         from stems.cbf import _IDX_SOC_ELEC
@@ -390,7 +282,7 @@ def build_controller(arm: Arm, env, config):
         raise ValueError(f"unknown policy {arm.policy!r}")
     if arm.barrier == "none":
         controller = PlainController(base)
-        if arm.policy == "hp-shift":       # the battery is not this controller's device
+        if arm.policy == "hp-shift":
             controller.control_indices = [env.hvac_action_index]
         return controller
     shield = CBFShield(config.cbf, B, battery_model=battery_model,

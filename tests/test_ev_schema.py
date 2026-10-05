@@ -1,22 +1,3 @@
-"""The merged housing + EV schema (``tx_travis_8b_ev``).
-
-Run:  .venv/Scripts/python -m pytest tests/test_ev_schema.py -q
-
-No shipped CityLearn dataset carries both a full thermal building model and
-electric vehicles, so ``setup_citylearn_ev.py`` merges them. These tests assert
-the two properties that make the merge trustworthy:
-
-1. **The thermal side is untouched.** Every STEMS base feature is still present,
-   the three original actions are still there in order, and the DHW tank still
-   charges. If the merge silently broke the housing side, every heat-pump result
-   on this schema would be meaningless.
-2. **The EV side is real.** Chargers are discovered, the countdown/`required
-   SOC` fields follow CityLearn's own encoding, and charging moves the vehicle
-   SOC only on occupied bays.
-
-The schema is generated on demand if absent, so the suite is self-contained.
-"""
-
 from __future__ import annotations
 
 import json
@@ -40,7 +21,7 @@ def schema_path():
             pytest.skip("base tx_travis_8b schema not generated")
         subprocess.run([sys.executable, "-B", str(REPO / "setup_citylearn_ev.py")],
                        cwd=str(REPO), check=True, capture_output=True)
-    if not SCHEMA.is_file():                                    # pragma: no cover
+    if not SCHEMA.is_file():
         pytest.skip("could not generate tx_travis_8b_ev")
     return SCHEMA
 
@@ -50,18 +31,13 @@ def env(schema_path):
     from stems.environment import STEMSEnvironment
     try:
         e = STEMSEnvironment(schema=str(schema_path), seed=0, heat_pump=True)
-    except Exception as exc:                                    # pragma: no cover
+    except Exception as exc:
         pytest.skip(f"merged schema unavailable: {exc!r}")
     e.reset()
     return e
 
 
-# ===========================================================================
-# 1. The housing side must survive the merge
-# ===========================================================================
-
 def test_no_thermal_observation_was_lost(env):
-    """Adding EVs must not cost a single STEMS base feature."""
     assert env.absent_observations == []
 
 
@@ -77,7 +53,6 @@ def test_thermal_isolation_modes_are_unchanged(env):
 
 
 def test_dhw_tank_still_charges(env):
-    """The housing side must remain physically live, not merely present."""
     obs, _ = env.reset()
     actions = np.zeros((env.num_buildings, env.action_dim), dtype=np.float32)
     actions[:, env.dhw_action_index] = 0.8
@@ -97,10 +72,6 @@ def test_building_count_and_dims(env):
     assert env.obs_dim == expected
 
 
-# ===========================================================================
-# 2. The EV side must be real
-# ===========================================================================
-
 def test_chargers_discovered(env):
     assert env.ev_slots >= 1
     assert env.ev_action_indices() == [env.action_dim - 1]
@@ -108,17 +79,14 @@ def test_chargers_discovered(env):
 
 
 def test_partial_ev_penetration(env):
-    """Not every building owns a charger -- that is the realistic case."""
     mask = env.action_presence_mask()
     ev_slot = env.ev_action_indices()[0]
     owners = int(mask[:, ev_slot].sum())
     assert 0 < owners < env.num_buildings
-    # The thermal actuators are on every building.
     assert mask[:, :3].all()
 
 
 def test_charger_calibration_is_plausible(env):
-    """rho from real charger power and battery size implies a multi-hour fill."""
     info = env.ev_info()
     power = info["max_charging_power"]
     owned = power > 0
@@ -149,7 +117,6 @@ def test_ev_charging_moves_soc_only_on_occupied_bays(env):
 
 
 def test_vehicles_actually_leave_and_return(env):
-    """A schedule where the car never departs would make deadlines vacuous."""
     obs, _ = env.reset()
     layout = env.ev_obs_layout()[0]
     actions = np.zeros((env.num_buildings, env.action_dim), dtype=np.float32)
@@ -166,16 +133,7 @@ def test_vehicles_actually_leave_and_return(env):
     assert seen_connected and seen_away
 
 
-# ===========================================================================
-# 3. The generated schedules must follow CityLearn's encoding
-# ===========================================================================
-
 def test_departure_countdown_reaches_zero_before_leaving(schema_path):
-    """CityLearn's own CSVs count ... 2, 1, 0 while still parked.
-
-    Stopping at 1 would silently delete the final charging opportunity before
-    departure, so this pins the convention.
-    """
     import csv
     path = SCHEMA_DIR / "charger_1_1.csv"
     with open(path) as f:
@@ -203,7 +161,6 @@ def test_schedule_states_and_length(schema_path):
 
 
 def test_required_soc_is_a_percentage(schema_path):
-    """CityLearn divides this field by 100 on load, so it must be stored as %."""
     import csv
     with open(SCHEMA_DIR / "charger_1_1.csv") as f:
         vals = [float(r["electric_vehicle_required_soc_departure"])
@@ -215,7 +172,6 @@ def test_required_soc_is_a_percentage(schema_path):
 
 
 def test_thermal_data_is_not_copied(schema_path):
-    """root_directory must still point at the untouched CityLearn cache."""
     with open(schema_path) as f:
         merged = json.load(f)
     with open(BASE_SCHEMA) as f:

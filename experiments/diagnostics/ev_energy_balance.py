@@ -1,12 +1,3 @@
-"""Why does the same set of departures cost different amounts of grid energy? (report, 6.4)
-
-    .venv/Scripts/python experiments/diagnostics/ev_energy_balance.py summer 50
-
-Energy balance of the fleet over the window, per (policy, rule):
-    grid energy drawn  =  energy held above arrival at departure  +  losses
-Arrival states are exogenous, so differences between runs are differences in
-(a) how far above the requirement cars leave and (b) losses (standby + conversion).
-"""
 import os
 import sys
 
@@ -30,7 +21,7 @@ for policy, rule in (("asap", "llf"), ("asap", "lp"), ("none", "lp")):
     shield = FleetShield(model, layout, e, cap, rule, BaseLoadForecaster(env.num_buildings, replay=replay))
     obs, _ = env.reset()
     done, ev_kwh, deps = False, 0.0, []
-    connected_soc_hours = 0.0          # sum over connected car-hours of SOC * capacity [kWh*h]
+    connected_soc_hours = 0.0
     capacity = None
     while not done:
         a = house(obs)

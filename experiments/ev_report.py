@@ -1,8 +1,4 @@
 #!/usr/bin/env python3
-"""Tables and figures from the EV coupling study (``experiments/ev_coupling.py``).
-
-    .venv/Scripts/python -m experiments.ev_report
-"""
 
 from __future__ import annotations
 
@@ -22,9 +18,6 @@ RULE_LABEL = {"noguard": "no shield", "independent": "per-vehicle barrier", "sta
 
 
 def load(path: Path) -> List[Dict[str, Any]]:
-    """Successful runs of a stage. A failed run would silently thin the average of
-    its cell (it did once: the hardest cases crashed and the cell showed the easy
-    season only), so any failure stops the report."""
     results = json.loads(path.read_text(encoding="utf-8"))["results"]
     failed = [r for r in results if r.get("status") != "ok"]
     if failed:
@@ -35,7 +28,6 @@ def load(path: Path) -> List[Dict[str, Any]]:
 
 
 def pivot(rows, key, value, agg=np.mean):
-    """{row key: {cap: value}} averaged over whatever else varies (the seasons)."""
     acc = defaultdict(lambda: defaultdict(list))
     for r in rows:
         acc[key(r)][r["cap"]].append(r[value])
@@ -83,12 +75,6 @@ def line_plot(path: Path, title: str, ylabel: str, series: Dict[str, Dict[float,
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path)
     plt.close(fig)
-
-
-# Not reported: ``avoidable_exceed_rate`` (hours over the cap). It was counted with
-# a 1e-6 kW threshold, and a shield that plans to the cap sits exactly on it, so a
-# plant-model error of a few watts counts as an hour over: the joint programme
-# showed 4% of hours "over" with 0.0 kWh over. Energy over the cap is the measure.
 
 
 def main() -> None:

@@ -1,16 +1,4 @@
 #!/usr/bin/env python3
-"""Evaluate a trained STEMS checkpoint on real CityLearn (Table I).
-
-Runs a deterministic episode for STEMS and the RuleBased baseline, computes the
-seven Table-I metrics, and reports metrics 1-5 normalised to RuleBased = 1.0
-(lower is better); discomfort and safety-violation rates are absolute.
-
-The RuleBased agent has no safety shield, so its safety_violation_rate is the
-"unprotected" reference; STEMS should be far lower.
-
-Usage:
-    .venv/Scripts/python evaluate.py --checkpoint checkpoints/seed0 --seed 0
-"""
 
 from __future__ import annotations
 
@@ -48,7 +36,7 @@ def run_episode(agent, env: STEMSEnvironment, config: STEMSConfig,
         actions = agent.select_action(obs, hist.get(), explore=False)
         nxt, _, term, trunc, _ = env.step(actions)
         if hasattr(agent, "observe"):
-            agent.observe(nxt)           # online DHW demand climatology (causal)
+            agent.observe(nxt)
         metrics.add_step(obs, actions, nxt)
         obs = nxt
         hist.update(obs)
@@ -76,9 +64,6 @@ def main() -> None:
 
     set_seed(args.seed)
     config = STEMSConfig()
-    # Any mode that drives the bidirectional HVAC actuator must also use the
-    # season-aware dual-setpoint comfort model, or it trains against the wrong
-    # physics -- see the comfort term in stems/reward.py.
     heat_pump = args.heat_pump or (
         "cooling_or_heating_device" in ACTION_GROUPS.get(args.isolate, []))
     if heat_pump:
@@ -102,18 +87,12 @@ def main() -> None:
                        dhw_barrier=dhw_barrier, cop_model=cop_model,
                        hvac_action_index=env.hvac_action_index)
     agent.load(args.checkpoint)
-    # The rule-based thermostat needs the heating set point (--heat-pump); it
-    # raises on the first step otherwise instead of guessing one.
     rule = RuleBasedAgent(num_buildings=B, hvac_control=env.hvac_control,
                           battery_nominal_power=battery["nominal_power"])
 
     print(f"[eval] env_type={env.env_type} B={B} obs_dim={env.obs_dim} "
           f"isolate={args.isolate} control_indices={control_indices} "
           f"checkpoint={args.checkpoint}")
-    # RuleBased has no isolation -- it always controls the battery, so its SOC
-    # metric stays meaningful; only the STEMS (isolated) run skips count_soc.
-    # Both runs are scored by the SAME readiness barrier so the DHW metrics are
-    # comparable; the shield the agent *acts* through is a separate instance.
     score_barrier, _ = build_thermal_stack(env, config.thermal, enable=args.preheat)
     rb = run_episode(rule, env, config, battery["soc_rate"], args.max_steps,
                      dhw_barrier=score_barrier)

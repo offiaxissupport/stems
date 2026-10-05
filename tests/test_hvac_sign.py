@@ -1,10 +1,3 @@
-"""The HVAC action's sign picks the mode: positive heats, negative cools.
-
-CityLearn splits the one action as ``a_heat = max(a, 0)``, ``a_cool = |min(a, 0)|``
-with ``hvac_mode = 3`` at every hour of the Travis data. These tests pin every
-consumer of that convention that previously assumed otherwise.
-"""
-
 from __future__ import annotations
 
 import os
@@ -34,20 +27,16 @@ def _obs(t_in=22.0, t_cool=24.0, t_heat=20.0, t_out=10.0, net=0.0, hour=12, heat
     return o
 
 
-# ---------------------------------------------------------------------------
-# Integral thermostat (shared by the environment's set-point mode and the baseline)
-# ---------------------------------------------------------------------------
-
 def _step(u, t_in, offset=0.0, t_heat=20.0, t_cool=24.0):
     f = lambda x: np.array([x], dtype=np.float32)
     return float(thermostat_step(f(u), f(t_in), f(t_heat), f(t_cool), f(offset))[0])
 
 
 def test_thermostat_integrates_the_distance_to_the_band():
-    assert _step(0.0, 18.0) == pytest.approx(HVAC_LOOP_GAIN * 2.0)          # cold: more heat
-    assert _step(0.2, 26.0) == pytest.approx(0.2 - HVAC_LOOP_GAIN * 2.0)    # hot: less / cool
-    assert _step(0.3, 22.0) == pytest.approx(0.3)                           # inside: hold
-    assert _step(0.3, 20.0 - 0.5 * HVAC_DEADBAND) == pytest.approx(0.3)     # deadband: hold
+    assert _step(0.0, 18.0) == pytest.approx(HVAC_LOOP_GAIN * 2.0)
+    assert _step(0.2, 26.0) == pytest.approx(0.2 - HVAC_LOOP_GAIN * 2.0)
+    assert _step(0.3, 22.0) == pytest.approx(0.3)
+    assert _step(0.3, 20.0 - 0.5 * HVAC_DEADBAND) == pytest.approx(0.3)
 
 
 def test_thermostat_is_bounded_and_never_cools_a_cold_house_from_rest():
@@ -59,10 +48,10 @@ def test_thermostat_is_bounded_and_never_cools_a_cold_house_from_rest():
 def test_offset_shifts_the_band_by_at_most_the_offset_range():
     assert HVAC_OFFSET_RANGE < 2.0, "the offset must stay inside the 2 degC comfort tolerance"
     assert _step(0.0, 20.5, offset=1.0) == pytest.approx(
-        HVAC_LOOP_GAIN * (20.0 + HVAC_OFFSET_RANGE - 20.5))                 # pre-heat
+        HVAC_LOOP_GAIN * (20.0 + HVAC_OFFSET_RANGE - 20.5))
     assert _step(0.0, 23.5, offset=-1.0) == pytest.approx(
-        -HVAC_LOOP_GAIN * (23.5 - (24.0 - HVAC_OFFSET_RANGE)))              # pre-cool
-    assert _step(0.0, 20.5, offset=5.0) == _step(0.0, 20.5, offset=1.0)     # clipped
+        -HVAC_LOOP_GAIN * (23.5 - (24.0 - HVAC_OFFSET_RANGE)))
+    assert _step(0.0, 20.5, offset=5.0) == _step(0.0, 20.5, offset=1.0)
 
 
 def test_baseline_runs_the_same_loop_in_power_mode_and_idles_in_setpoint_mode():
@@ -80,7 +69,7 @@ def test_baseline_integrates_from_the_executed_action():
     rbc = RuleBasedAgent(num_buildings=1, hvac_control="power", battery_nominal_power=P_BATT)
     cold = _obs(t_in=17.0, t_heat=20.0, t_cool=24.0)
     rbc.select_action([cold])
-    rbc.notify_executed(np.array([[0.0, 0.0, 0.0]], dtype=np.float32))      # shield cut it to 0
+    rbc.notify_executed(np.array([[0.0, 0.0, 0.0]], dtype=np.float32))
     assert rbc.select_action([cold])[0, HVAC] == pytest.approx(HVAC_LOOP_GAIN * 3.0)
 
 
@@ -90,13 +79,7 @@ def test_thermostat_refuses_to_guess_a_missing_heating_set_point():
             [_obs(heat_pump=False)])
 
 
-# ---------------------------------------------------------------------------
-# CoP-aware HVAC power guard
-# ---------------------------------------------------------------------------
-
 def _shield(cap_kw=3.0):
-    # Heating nameplate 8.7 kW, cooling 4.8 kW: the same |a| draws very
-    # different power depending on which device the sign selects.
     cop = CoPModel(np.array([0.29]), np.array([46.0]), np.array([0.29]),
                    np.array([9.0]), np.array([8.7]), np.array([4.8]))
     return CBFShield(CBFConfig(P_building_max=cap_kw, P_grid_max=100.0), 1,
@@ -105,7 +88,6 @@ def _shield(cap_kw=3.0):
 
 
 def test_cooling_command_on_a_cold_day_is_priced_at_the_cooling_device():
-    """0.5 x 4.8 kW = 2.4 kW fits a 3 kW cap; priced as heating it would not."""
     safe = np.array([[0.0, 0.0, -0.5]], dtype=np.float32)
     out = _shield()._apply_hvac_power_guard(safe.copy(), [_obs(t_out=-5.0)])
     assert out[0, HVAC] == pytest.approx(-0.5)
@@ -117,10 +99,6 @@ def test_heating_command_is_capped_and_keeps_its_sign():
     assert 0.0 < out[0, HVAC] < 0.5
     assert out[0, HVAC] * 8.7 <= 3.0 + 1e-5
 
-
-# ---------------------------------------------------------------------------
-# Time-of-use storage rule
-# ---------------------------------------------------------------------------
 
 def _hourly(hour, load=2.0, solar=0.5):
     o = _obs(hour=hour)
@@ -136,17 +114,14 @@ def test_rule_charges_before_the_peak_and_idles_overnight():
 
 
 def test_peak_discharge_never_exceeds_the_houses_own_net_load():
-    """Exports earn nothing, so the battery covers the load and no more."""
     rbc = RuleBasedAgent(num_buildings=1, hvac_control="setpoint", battery_nominal_power=P_BATT)
     a = rbc.select_action([_hourly(18, load=2.0, solar=0.5)])[0, 1]
     assert a == pytest.approx(-(2.0 - 0.5) / 3.0)
-    assert rbc.select_action([_hourly(18, load=0.4, solar=1.0)])[0, 1] == 0.0     # PV surplus
-    assert rbc.select_action([_hourly(18, load=9.0, solar=0.0)])[0, 1] == -1.0    # capped
+    assert rbc.select_action([_hourly(18, load=0.4, solar=1.0)])[0, 1] == 0.0
+    assert rbc.select_action([_hourly(18, load=9.0, solar=0.0)])[0, 1] == -1.0
 
 
 def test_grid_guard_scales_charging_to_the_cap_exactly():
-    """Two buildings importing 10 kW each, both asking to charge 10 kW, cap 30 kW:
-    half the charging fits. (cap / total = 0.75 would leave 35 kW.)"""
     from stems.battery import BatteryModel
     from stems.config import SafetyConfig
 
@@ -158,10 +133,10 @@ def test_grid_guard_scales_charging_to_the_cap_exactly():
                        safety_cfg=SafetyConfig(anticipatory=False, robust_margins=False))
     obs = [np.zeros(30) for _ in range(2)]
     for o in obs:
-        o[19], o[20] = 0.5, 10.0                 # state of charge, net load last hour
+        o[19], o[20] = 0.5, 10.0
     ask = np.zeros((2, 3), dtype=np.float32)
     ask[:, 1] = 1.0
     out = shield.project(ask, obs)
     assert out[:, 1] == pytest.approx([0.5, 0.5], abs=1e-6)
-    shield.grid_guard = False                     # a cap shield with a forecast takes over
+    shield.grid_guard = False
     assert shield.project(ask, obs)[:, 1] == pytest.approx([1.0, 1.0])

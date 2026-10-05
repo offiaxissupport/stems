@@ -1,26 +1,4 @@
 #!/usr/bin/env python3
-"""
-Training script for the Hierarchical STEMS agent.
-
-Trains HierarchicalSTEMSAgent on either:
-  - The default 3-building CityLearn / mock environment (same as STEMS)
-  - A large-grid mock environment with configurable B buildings (--num-buildings 50)
-
-Uses off-policy SAC with a replay buffer (Algorithm 2 variant):
-  - Collect transitions into ReplayBuffer
-  - Sample random mini-batches at every step once the buffer is warm
-  - Evaluate on a separate env instance every --eval-every episodes
-
-Usage:
-    # Standard 3-building (matches CityLearn Phase 2):
-    python train_hierarchical.py --episodes 50
-
-    # Large-grid 50-building scale-out test:
-    python train_hierarchical.py --num-buildings 50 --episodes 30 --save-dir checkpoints/hierarchical_50b/
-
-    # Resume:
-    python train_hierarchical.py --load checkpoints/hierarchical/best/
-"""
 
 from __future__ import annotations
 
@@ -41,10 +19,6 @@ from stems.metrics import MetricsCalculator
 from stems.reward import STEMSReward
 from stems.utils import HistoryBuffer, ReplayBuffer, set_seed
 
-
-# ---------------------------------------------------------------------------
-# Argument parsing
-# ---------------------------------------------------------------------------
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
@@ -82,12 +56,7 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-# ---------------------------------------------------------------------------
-# Environment factory
-# ---------------------------------------------------------------------------
-
 def make_envs(args: argparse.Namespace):
-    """Return (train_env, eval_env)."""
     if args.num_buildings > 0:
         ep_len = args.episode_len if args.episode_len > 0 else 8760
         print(f"[hier] Using LargeGridEnv with {args.num_buildings} buildings, episode_len={ep_len}")
@@ -98,10 +67,6 @@ def make_envs(args: argparse.Namespace):
         eval_env  = STEMSEnvironment(schema=args.schema, seed=args.seed + 1000)
     return train_env, eval_env
 
-
-# ---------------------------------------------------------------------------
-# Agent factory
-# ---------------------------------------------------------------------------
 
 def make_agent(env, args: argparse.Namespace) -> HierarchicalSTEMSAgent:
     B = env.num_buildings
@@ -133,16 +98,11 @@ def make_agent(env, args: argparse.Namespace) -> HierarchicalSTEMSAgent:
     return agent
 
 
-# ---------------------------------------------------------------------------
-# Evaluation helper
-# ---------------------------------------------------------------------------
-
 def evaluate_once(
     agent: HierarchicalSTEMSAgent,
     env,
     config: STEMSConfig,
 ) -> Dict[str, float]:
-    """Run one evaluation episode and return metric dict."""
     calc = MetricsCalculator(
         num_buildings=env.num_buildings,
         cbf_config=config.cbf,
@@ -169,10 +129,6 @@ def evaluate_once(
 
     return calc.compute_all()
 
-
-# ---------------------------------------------------------------------------
-# Main training loop
-# ---------------------------------------------------------------------------
 
 def train(args: argparse.Namespace) -> None:
     set_seed(args.seed)
@@ -235,7 +191,6 @@ def train(args: argparse.Namespace) -> None:
             rewards  = reward_fn.compute(obs_list, actions, next_obs, prev_net)
             prev_net = [float(o[20]) for o in next_obs]
 
-            # Count raw CBF violations (before shield projection)
             if agent.cbf is not None:
                 viols = agent.cbf.check_violations(actions, obs_list)
                 ep_violations += int(viols.any())
@@ -252,7 +207,6 @@ def train(args: argparse.Namespace) -> None:
             ep_reward   += float(np.mean(rewards))
             ep_steps    += 1
 
-            # Off-policy mini-batch update
             if total_steps >= args.warmup_steps and replay.is_ready:
                 step_losses = agent.update(replay.sample(args.batch_size))
                 for k, v in step_losses.items():
@@ -260,7 +214,6 @@ def train(args: argparse.Namespace) -> None:
 
             obs_list = next_obs
 
-        # Normalise episode losses
         if ep_steps > 0:
             ep_losses = {k: v / ep_steps for k, v in ep_losses.items()}
 
@@ -286,12 +239,10 @@ def train(args: argparse.Namespace) -> None:
             "lambdas": lam,
         })
 
-        # ---- Save latest ----
         agent.save(args.save_dir)
         with open(os.path.join(args.save_dir, "training_history.json"), "w") as f:
             json.dump(history_log, f, indent=2)
 
-        # ---- Evaluation ----
         if ep % args.eval_every == 0:
             metrics = evaluate_once(agent, eval_env, config)
             cost    = float(metrics.get("cost", float("inf")))
@@ -312,10 +263,6 @@ def train(args: argparse.Namespace) -> None:
     print(f"\n[hier] Training complete. Best eval cost: {best_cost:.4f}")
     print(f"[hier] Checkpoints: {args.save_dir}")
 
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     args = parse_args()

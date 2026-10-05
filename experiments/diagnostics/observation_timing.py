@@ -1,7 +1,3 @@
-"""Which hour do the load, solar and hot-water demand observations describe?
-
-    .venv/Scripts/python experiments/diagnostics/observation_timing.py
-"""
 import os
 import sys
 

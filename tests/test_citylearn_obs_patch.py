@@ -1,11 +1,3 @@
-"""CityLearn's state observations, and our correction (see ENDOGENOUS_OBS).
-
-Unpatched, the indoor temperature observation is the dataset's uncontrolled
-value for the next hour, so a controller cannot see its own HVAC actions; and
-the final transition of an episode repeats the previous hour's state. Real
-CityLearn only.
-"""
-
 from __future__ import annotations
 
 import os
@@ -71,8 +63,6 @@ def test_patched_final_transition_reports_its_own_hour():
 
 
 def test_metrics_match_citylearn_ground_truth():
-    """Every scored quantity, recomputed from CityLearn's own series for the
-    hours the actions were applied to, must equal MetricsCalculator's value."""
     from stems.config import CBFConfig
     from stems.metrics import MetricsCalculator
 

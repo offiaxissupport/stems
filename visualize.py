@@ -1,18 +1,4 @@
 #!/usr/bin/env python3
-"""
-Generate all visualizations from the STEMS paper.
-
-Usage:
-    python visualize.py [--checkpoint checkpoints/] [--output-dir plots/]
-
-Produces:
-    training_curves.png  – Fig 2 (2×2 subplot)
-    radar_chart.png      – Fig 3 (extreme weather radar)
-    discomfort_bar.png   – Fig 4
-    safety_bar.png       – Fig 5
-    adjacency_heatmap.png – Fig 6
-    attention_weights.png – Fig 7
-"""
 
 from __future__ import annotations
 
@@ -23,7 +9,6 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-# Matplotlib with non-interactive backend (safe for headless environments)
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -45,10 +30,6 @@ from stems.utils import HistoryBuffer, set_seed
 import torch
 
 
-# ---------------------------------------------------------------------------
-# Argument parsing
-# ---------------------------------------------------------------------------
-
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Generate STEMS paper visualizations")
     p.add_argument("--checkpoint", type=str, default="checkpoints/")
@@ -60,10 +41,6 @@ def parse_args() -> argparse.Namespace:
                    help="Require real CityLearn and real result files for paper figures")
     return p.parse_args()
 
-
-# ---------------------------------------------------------------------------
-# Load agent
-# ---------------------------------------------------------------------------
 
 def _load_agent(checkpoint: str, env: STEMSEnvironment) -> STEMSAgent:
     config = STEMSConfig()
@@ -82,15 +59,10 @@ def _load_agent(checkpoint: str, env: STEMSEnvironment) -> STEMSAgent:
     return agent
 
 
-# ---------------------------------------------------------------------------
-# Fig 2 – Training curves (2×2)
-# ---------------------------------------------------------------------------
-
 def plot_training_curves(
     history: Dict[str, List[Any]],
     output_dir: str,
 ) -> None:
-    """2×2 subplot: cost, safety violations, discomfort (proxy), reward."""
     fig, axes = plt.subplots(2, 2, figsize=(10, 8))
     fig.suptitle("STEMS Training Curves", fontsize=14, fontweight="bold")
 
@@ -101,7 +73,6 @@ def plot_training_curves(
             return vals
         return [float(np.mean(vals[max(0, i - window + 1): i + 1])) for i in range(len(vals))]
 
-    # Cost proxy (negative of reward)
     ax = axes[0, 0]
     rewards = history.get("total_reward", [0.0] * len(episodes))
     ax.plot(episodes, _smooth(rewards), color="steelblue", linewidth=2)
@@ -109,7 +80,6 @@ def plot_training_curves(
     ax.set_xlabel("Episode"); ax.set_ylabel("Total Episode Reward")
     ax.set_title("Reward (higher is better)")
 
-    # Safety violations
     ax = axes[0, 1]
     viols = history.get("safety_violations", [0.0] * len(episodes))
     ax.plot(episodes, _smooth(viols), color="crimson", linewidth=2)
@@ -117,7 +87,6 @@ def plot_training_curves(
     ax.set_xlabel("Episode"); ax.set_ylabel("Violation Rate")
     ax.set_title("Safety Violation Rate (lower is better)")
 
-    # Actor loss (proxy for policy improvement)
     ax = axes[1, 0]
     a_loss = history.get("actor_loss", [0.0] * len(episodes))
     ax.plot(episodes, _smooth(a_loss), color="darkorange", linewidth=2)
@@ -125,7 +94,6 @@ def plot_training_curves(
     ax.set_xlabel("Episode"); ax.set_ylabel("Actor Loss")
     ax.set_title("Actor Loss (convergence indicator)")
 
-    # Eval cost
     ax = axes[1, 1]
     eval_cost = history.get("eval_cost", [0.0] * len(episodes))
     ax.plot(episodes, _smooth(eval_cost), color="forestgreen", linewidth=2)
@@ -140,19 +108,14 @@ def plot_training_curves(
     print(f"[viz] Saved {path}")
 
 
-# ---------------------------------------------------------------------------
-# Fig 3 – Radar chart
-# ---------------------------------------------------------------------------
-
 def plot_radar_chart(
     metrics: Dict[str, Dict[str, float]],
     output_dir: str,
 ) -> None:
-    """Radar chart comparing agents across 5 metrics (Fig 3)."""
     categories = ["Cost", "Emission", "Daily Peak", "Consumption", "Ramping"]
     N = len(categories)
     angles = np.linspace(0, 2 * np.pi, N, endpoint=False).tolist()
-    angles += angles[:1]   # close polygon
+    angles += angles[:1]
 
     fig, ax = plt.subplots(figsize=(7, 7), subplot_kw={"polar": True})
     colors = ["steelblue", "crimson", "darkorange", "forestgreen"]
@@ -181,15 +144,10 @@ def plot_radar_chart(
     print(f"[viz] Saved {path}")
 
 
-# ---------------------------------------------------------------------------
-# Fig 4 – Discomfort bar chart
-# ---------------------------------------------------------------------------
-
 def plot_discomfort_bar(
     metrics: Dict[str, Dict[str, float]],
     output_dir: str,
 ) -> None:
-    """Grouped bar chart of discomfort rates per agent (Fig 4)."""
     agents = list(metrics.keys())
     values = [metrics[a].get("discomfort_rate", 0.0) * 100.0 for a in agents]
     colors = plt.cm.Set2(np.linspace(0, 1, len(agents)))
@@ -207,15 +165,10 @@ def plot_discomfort_bar(
     print(f"[viz] Saved {path}")
 
 
-# ---------------------------------------------------------------------------
-# Fig 5 – Safety violation bar chart
-# ---------------------------------------------------------------------------
-
 def plot_safety_bar(
     metrics: Dict[str, Dict[str, float]],
     output_dir: str,
 ) -> None:
-    """Grouped bar chart of safety violation rates per agent (Fig 5)."""
     agents = list(metrics.keys())
     values = [metrics[a].get("safety_violation_rate", 0.0) * 100.0 for a in agents]
     colors = plt.cm.Set1(np.linspace(0, 0.8, len(agents)))
@@ -234,15 +187,10 @@ def plot_safety_bar(
     print(f"[viz] Saved {path}")
 
 
-# ---------------------------------------------------------------------------
-# Fig 6 – Adjacency heatmap
-# ---------------------------------------------------------------------------
-
 def plot_adjacency_heatmap(
     agent: STEMSAgent,
     output_dir: str,
 ) -> None:
-    """Heatmap of building connection weights W (Fig 6)."""
     adj = agent.adj.cpu().numpy()
     B = adj.shape[0]
     labels = [f"B{i+1}" for i in range(B)]
@@ -265,34 +213,25 @@ def plot_adjacency_heatmap(
     print(f"[viz] Saved {path}")
 
 
-# ---------------------------------------------------------------------------
-# Fig 7 – Temporal attention weights
-# ---------------------------------------------------------------------------
-
 def plot_attention_weights(
     agent: STEMSAgent,
     obs: List[np.ndarray],
     output_dir: str,
 ) -> None:
-    """24×24 attention weight heatmap from the Transformer (Fig 7)."""
     config = STEMSConfig()
     T = config.transformer.window_size
     B = agent.B
 
-    # Build a dummy history tensor from the current observation
     history = np.stack([obs] * T, axis=1) if len(np.array(obs).shape) == 2 else \
               np.tile(np.array(obs)[None, :], (1, T, 1))
-    h_tensor = torch.tensor(history, dtype=torch.float32).to(agent.device)  # (B, T, obs_dim)
+    h_tensor = torch.tensor(history, dtype=torch.float32).to(agent.device)
 
-    # Extract attention weights from the Transformer
     transformer = agent.encoder.temporal_transformer
     with torch.no_grad():
         x = transformer.input_proj(h_tensor) + transformer.pos_enc[:, :T, :]
-        # Use the internal multi-head attention with need_weights=True
         _, attn_weights = transformer.attn(x, x, x, need_weights=True, average_attn_weights=True)
-        # attn_weights: (B, T, T)
 
-    avg_attn = attn_weights.mean(dim=0).cpu().numpy()   # (T, T)
+    avg_attn = attn_weights.mean(dim=0).cpu().numpy()
 
     fig, ax = plt.subplots(figsize=(8, 7))
     im = ax.imshow(avg_attn, cmap="Blues", aspect="auto")
@@ -302,7 +241,6 @@ def plot_attention_weights(
     ax.set_title(f"Temporal Attention Weights ({T}×{T}) – Averaged over Buildings (Fig 7)",
                  fontweight="bold")
 
-    # Label every 6 hours
     ticks = list(range(0, T, 6))
     tick_labels = [f"t-{T-1-i}h" for i in ticks]
     ax.set_xticks(ticks); ax.set_xticklabels(tick_labels, rotation=45, ha="right")
@@ -314,10 +252,6 @@ def plot_attention_weights(
     print(f"[viz] Saved {path}")
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
 def main(args: argparse.Namespace) -> None:
     set_seed(args.seed)
     os.makedirs(args.output_dir, exist_ok=True)
@@ -328,7 +262,6 @@ def main(args: argparse.Namespace) -> None:
         validate_strict_paper_mode(env, context="visualization")
     agent = _load_agent(args.checkpoint, env)
 
-    # Load training history if available
     hist_path = os.path.join(args.checkpoint, "training_history.json")
     if os.path.exists(hist_path):
         with open(hist_path) as f:
@@ -348,7 +281,6 @@ def main(args: argparse.Namespace) -> None:
             "eval_cost": list(np.linspace(800, 400, n) + np.random.randn(n) * 30),
         }
 
-    # Load evaluation metrics from evaluate.py output, or fall back to demo
     eval_path = os.path.join(args.checkpoint, "eval_results.json")
     if os.path.exists(eval_path):
         with open(eval_path) as f:
@@ -370,7 +302,6 @@ def main(args: argparse.Namespace) -> None:
                            "discomfort_rate": 0.089, "safety_violation_rate": 0.052},
         }
 
-    # Generate all figures
     plot_training_curves(history, args.output_dir)
     plot_radar_chart(sample_metrics, args.output_dir)
     plot_discomfort_bar(sample_metrics, args.output_dir)

@@ -1,14 +1,3 @@
-"""Fail-loud validation that we are running real CityLearn, not a fallback.
-
-This is a standing guard, not a one-off check: run it before any training or
-evaluation run to catch silent mock fallback, schema drift, or an action/obs
-layout that no longer matches what the rest of STEMS assumes.
-
-Run directly (prints PASS/FAIL) or under pytest:
-    .venv/Scripts/python tests/test_real_env_validation.py
-    .venv/Scripts/python -m pytest tests/test_real_env_validation.py -q
-"""
-
 from __future__ import annotations
 
 import os
@@ -25,7 +14,6 @@ EXPECTED_ACTION_NAMES = ["dhw_storage", "electrical_storage", "cooling_or_heatin
 
 
 def test_env_type_is_real_not_mock():
-    """Default construction must use real CityLearn; never a silent fallback."""
     env = STEMSEnvironment(seed=0)
     assert env.env_type == "CityLearn", (
         f"Expected real CityLearn, got env_type={env.env_type!r}. "
@@ -60,8 +48,6 @@ def test_observation_layout():
 
 
 def test_real_env_survives_a_short_rollout():
-    """End-to-end smoke: reset + ~30 steps of real CityLearn with no-op actions
-    must not raise, and must report 8 well-formed observation vectors per step."""
     env = STEMSEnvironment(seed=0)
     obs_list, _ = env.reset()
     assert len(obs_list) == EXPECTED_BUILDINGS
@@ -81,12 +67,9 @@ def test_real_env_survives_a_short_rollout():
 
 
 def test_battery_info_is_per_building_and_plausible():
-    """battery_info() must return real per-building dynamics, not a placeholder."""
     env = STEMSEnvironment(seed=0)
     bi = env.battery_info()
     assert bi["soc_rate"].shape == (EXPECTED_BUILDINGS,)
-    # soc_rate = nominal_power/capacity; the paper's hard-coded 0.1 under-estimated
-    # this 2-5x on real data, so every building's rate should exceed it.
     assert np.all(bi["soc_rate"] > 0.1), (
         f"soc_rate looks like the old hard-coded placeholder: {bi['soc_rate']}")
 

@@ -1,5 +1,3 @@
-"""STEMS: Spatial-Temporal Enhanced Multi-Agent Safe Building Energy Management System."""
-
 from stems.config import STEMSConfig
 from stems.environment import STEMSEnvironment
 from stems.graph import BuildingGraph

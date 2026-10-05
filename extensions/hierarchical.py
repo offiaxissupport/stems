@@ -1,56 +1,3 @@
-"""
-Hierarchical DRL Agent for large-scale building energy coordination.
-
-Architecture overview (matches the paper's Section III-C extension):
-
-    LocalEncoder      obs_i (D) -> local_repr_i (local_dim)
-                      Lightweight 2-layer MLP + LayerNorm.  One shared encoder
-                      across all buildings (parameter efficient).
-
-    EventTrigger      Per-building gate that fires only when
-                      ||obs_i - last_obs_i||_2 > threshold.
-                      Reduces coordinator communication by ~60 % on typical
-                      CityLearn traces (buildings are often in steady-state).
-
-    ClusterAssignment Partitions B buildings into K ≈ ceil(B/5) clusters.
-                      Assignment is computed once from the adjacency matrix
-                      using spectral clustering (falls back to sequential split
-                      when scikit-learn is unavailable).
-
-    ClusterCoordinator
-                      Two-stage module:
-                        1. Intra-cluster pooling: masked mean of active
-                           local_reprs within each cluster (respects event gate).
-                        2. Inter-cluster sparse attention: K×K self-attention
-                           across cluster summaries → cluster_latent_k.
-                      Complexity is O(K²) vs O(B²) for the flat GCN.
-
-    LocalPolicy       SAC Gaussian policy per building.
-                      Input = [local_repr_i (local_dim),
-                               cluster_latent_{cluster(i)} (cluster_dim)]
-                      → mean + log_std → tanh-squashed action.
-
-    CostCritic        Per-building soft constraint critic (3 outputs for the
-                      three CBF constraints: SOC, building power, grid power).
-
-    HierarchicalSTEMSAgent
-                      Integrates all modules with:
-                        - Double Q-critics for SAC (off-policy, replay buffer)
-                        - Lagrangian safety via cost critics + λ ascent
-                        - CBF shield fallback (same QP as STEMS paper)
-                        - Scale-out test: LargeGridEnv generates up to 50 buildings
-
-Usage:
-    from stems.hierarchical import HierarchicalSTEMSAgent, LargeGridEnv
-
-    env   = LargeGridEnv(num_buildings=50, seed=0)
-    agent = HierarchicalSTEMSAgent(
-        obs_dim=env.obs_dim, action_dim=env.action_dim,
-        num_buildings=env.num_buildings,
-    )
-    # Training: see train_hierarchical.py
-"""
-
 from __future__ import annotations
 
 import copy
@@ -68,47 +15,23 @@ from stems.cbf import CBFShield
 from stems.config import CBFConfig, LagrangianConfig
 from stems.environment import OBS_DIM, ACTION_DIM, _MockBuilding
 
-# ---------------------------------------------------------------------------
-# Optional spectral clustering
-# ---------------------------------------------------------------------------
 _SKLEARN_AVAILABLE = False
 try:
-    from sklearn.cluster import SpectralClustering  # type: ignore
+    from sklearn.cluster import SpectralClustering
     _SKLEARN_AVAILABLE = True
 except ImportError:
     pass
 
-# ---------------------------------------------------------------------------
-# Index constants (match OBS_NAMES in environment.py)
-# ---------------------------------------------------------------------------
 _IDX_SOC_ELEC = 19
 _IDX_NET      = 20
 
-# ---------------------------------------------------------------------------
-# Hyper-parameters (tune via HierarchicalConfig or keyword args)
-# ---------------------------------------------------------------------------
-LOCAL_DIM    = 32   # LocalEncoder output dim
-CLUSTER_DIM  = 64   # ClusterCoordinator output dim (= attention embed_dim)
-HIDDEN_DIM   = 128  # LocalPolicy and critic hidden dim
-NUM_HEADS    = 4    # ClusterCoordinator self-attention heads
+LOCAL_DIM    = 32
+CLUSTER_DIM  = 64
+HIDDEN_DIM   = 128
+NUM_HEADS    = 4
 
-
-# ==========================================================================
-# Cluster Assignment
-# ==========================================================================
 
 class ClusterAssignment:
-    """Assigns B buildings to K ≈ ceil(B/5) clusters.
-
-    Parameters
-    ----------
-    num_buildings : int
-    adj           : (B, B) float array – adjacency weights (optional).
-                    If given and scikit-learn is available, spectral clustering
-                    is used for a graph-aware partition; otherwise sequential.
-    cluster_size  : int – target number of buildings per cluster (default 5).
-    """
-
     def __init__(
         self,
         num_buildings: int,
@@ -131,7 +54,6 @@ class ClusterAssignment:
                 return sc.fit_predict(adj.astype(float)).astype(int)
             except Exception:
                 pass
-        # Fallback: sequential partition (0..K-1 → cluster 0, K..2K-1 → 1, ...)
         labels = np.zeros(self.B, dtype=int)
         buildings_per_cluster = max(1, self.B // self.K)
         for i in range(self.B):
@@ -142,56 +64,27 @@ class ClusterAssignment:
         return [i for i in range(self.B) if self.labels[i] == k]
 
 
-# ==========================================================================
-# Event Trigger
-# ==========================================================================
-
 class EventTrigger:
-    """Per-building event gate.
-
-    Fires for building i when ||obs_i - last_obs_i||_2 > threshold.
-    On the first call every building fires unconditionally (no prior state).
-
-    Parameters
-    ----------
-    num_buildings : int
-    threshold     : float – Euclidean distance threshold (default 0.5)
-    """
-
     def __init__(self, num_buildings: int, threshold: float = 0.5) -> None:
         self.B = num_buildings
         self.threshold = threshold
-        self._last_obs: Optional[np.ndarray] = None   # (B, obs_dim)
+        self._last_obs: Optional[np.ndarray] = None
 
     def reset(self) -> None:
         self._last_obs = None
 
     def __call__(self, obs_list: List[np.ndarray]) -> np.ndarray:
-        """Return boolean mask (B,) – True for buildings that triggered."""
-        obs = np.array(obs_list, dtype=np.float32)   # (B, D)
+        obs = np.array(obs_list, dtype=np.float32)
         if self._last_obs is None:
             fired = np.ones(self.B, dtype=bool)
         else:
-            delta = np.linalg.norm(obs - self._last_obs, axis=1)  # (B,)
+            delta = np.linalg.norm(obs - self._last_obs, axis=1)
             fired = delta > self.threshold
         self._last_obs = obs.copy()
         return fired
 
 
-# ==========================================================================
-# Local Encoder
-# ==========================================================================
-
 class LocalEncoder(nn.Module):
-    """Lightweight 2-layer MLP that maps a single building obs to local_repr.
-
-    Shared across all buildings (parameter efficient; buildings are
-    statistically similar up to load scale).
-
-    Input  : (N, obs_dim)
-    Output : (N, local_dim)
-    """
-
     def __init__(self, obs_dim: int, local_dim: int = LOCAL_DIM) -> None:
         super().__init__()
         self.net = nn.Sequential(
@@ -204,27 +97,7 @@ class LocalEncoder(nn.Module):
         return self.norm(self.net(x))
 
 
-# ==========================================================================
-# Cluster Coordinator (sparse inter-cluster attention)
-# ==========================================================================
-
 class ClusterCoordinator(nn.Module):
-    """Two-stage coordinator: intra-cluster pooling + inter-cluster attention.
-
-    Stage 1 (pooling):
-        For each cluster k, compute the masked mean of local_reprs for
-        buildings that triggered the event gate.  If none triggered, reuse
-        the cached cluster summary from the previous step.
-
-    Stage 2 (sparse attention):
-        Apply a single multi-head self-attention layer over the K cluster
-        summaries.  Complexity O(K² · cluster_dim), which for K=10 (B=50)
-        is 100× cheaper than the full B²=2500 GCN in flat STEMS.
-
-    Input  : local_reprs (B, local_dim), fired (B,) gate mask
-    Output : cluster_latents (K, cluster_dim)
-    """
-
     def __init__(
         self,
         local_dim: int = LOCAL_DIM,
@@ -234,9 +107,7 @@ class ClusterCoordinator(nn.Module):
         super().__init__()
         self.local_dim   = local_dim
         self.cluster_dim = cluster_dim
-        # Project pooled local_repr to cluster_dim
         self.input_proj = nn.Linear(local_dim, cluster_dim)
-        # Inter-cluster sparse attention
         self.attn = nn.MultiheadAttention(
             embed_dim=cluster_dim,
             num_heads=num_heads,
@@ -251,17 +122,15 @@ class ClusterCoordinator(nn.Module):
 
     def forward(
         self,
-        local_reprs: torch.Tensor,          # (B, local_dim)
-        fired: torch.Tensor,                # (B,) bool
+        local_reprs: torch.Tensor,
+        fired: torch.Tensor,
         cluster_assignment: ClusterAssignment,
-        cached: Optional[torch.Tensor],     # (K, cluster_dim) or None
+        cached: Optional[torch.Tensor],
     ) -> torch.Tensor:
-        """Return updated cluster_latents (K, cluster_dim)."""
         K = cluster_assignment.K
         device = local_reprs.device
         dtype  = local_reprs.dtype
 
-        # Stage 1: intra-cluster masked mean pooling
         summaries = torch.zeros(K, self.local_dim, device=device, dtype=dtype)
         updated = torch.zeros(K, dtype=torch.bool, device=device)
 
@@ -273,38 +142,22 @@ class ClusterCoordinator(nn.Module):
                 summaries[k] = local_reprs[idx].mean(dim=0)
                 updated[k] = True
             elif cached is not None:
-                # No triggered buildings → decode cached latent back to local_dim
-                # (we skip the intra-pool and re-use the old summary implicitly
-                #  by keeping summaries[k] = 0, then blending below)
                 pass
 
-        projected = self.input_proj(summaries)   # (K, cluster_dim)
+        projected = self.input_proj(summaries)
 
-        # Blend: updated clusters use fresh projection; stale use cached latent
         if cached is not None:
-            mask = updated.unsqueeze(1).float()  # (K, 1)
+            mask = updated.unsqueeze(1).float()
             projected = mask * projected + (1 - mask) * cached
 
-        # Stage 2: inter-cluster self-attention  (K×K)
-        x = projected.unsqueeze(0)                  # (1, K, cluster_dim)
+        x = projected.unsqueeze(0)
         attn_out, _ = self.attn(x, x, x)
-        x = self.norm(x + attn_out)                 # residual + LN
-        x = self.norm2(x + self.ff(x))              # FFN block
-        return x.squeeze(0)                          # (K, cluster_dim)
+        x = self.norm(x + attn_out)
+        x = self.norm2(x + self.ff(x))
+        return x.squeeze(0)
 
-
-# ==========================================================================
-# Local Policy (SAC Gaussian)
-# ==========================================================================
 
 class LocalPolicy(nn.Module):
-    """Lightweight SAC policy for a single building.
-
-    Input  : [local_repr (local_dim), cluster_latent (cluster_dim)]  →  96-dim
-    Output : (mean, log_std) of a Gaussian over action_dim
-    Actions are tanh-squashed to [-1, 1].
-    """
-
     LOG_STD_MIN = -5.0
     LOG_STD_MAX =  2.0
 
@@ -325,28 +178,23 @@ class LocalPolicy(nn.Module):
         self.log_std_head = nn.Linear(hidden_dim, action_dim)
 
     def forward(self, feat: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Return (mean, std) without sampling."""
         h = self.net(feat)
         mean    = self.mean_head(h)
         log_std = torch.clamp(self.log_std_head(h), self.LOG_STD_MIN, self.LOG_STD_MAX)
         return mean, log_std.exp()
 
     def sample(self, feat: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Reparameterised sample with tanh squash; returns (action, log_prob)."""
         mean, std = self.forward(feat)
         dist = torch.distributions.Normal(mean, std)
         x = dist.rsample()
         y = torch.tanh(x)
-        # Correct log_prob for tanh: log π(a|s) = log N(x) - Σ log(1 - tanh²(x))
         log_prob = dist.log_prob(x) - torch.log(1 - y.pow(2) + 1e-6)
         return y, log_prob.sum(dim=-1)
 
     def log_prob_of(
         self, feat: torch.Tensor, actions: torch.Tensor
     ) -> torch.Tensor:
-        """Log-probability of given (tanh-squashed) actions."""
         mean, std = self.forward(feat)
-        # Invert tanh: x = atanh(a), clamped for numerical stability
         a_clamped = actions.clamp(-1 + 1e-6, 1 - 1e-6)
         x = torch.atanh(a_clamped)
         dist = torch.distributions.Normal(mean, std)
@@ -354,13 +202,7 @@ class LocalPolicy(nn.Module):
         return log_prob.sum(dim=-1)
 
 
-# ==========================================================================
-# Q-Critic and Cost Critic
-# ==========================================================================
-
 class _QNet(nn.Module):
-    """Double-Q critic: maps (feat, action) → scalar Q-value."""
-
     def __init__(self, in_dim: int, hidden_dim: int = HIDDEN_DIM) -> None:
         super().__init__()
         self.net = nn.Sequential(
@@ -374,8 +216,6 @@ class _QNet(nn.Module):
 
 
 class _CostCriticNet(nn.Module):
-    """Cost critic for Lagrangian safety: maps (feat, action) → (num_constraints,)."""
-
     def __init__(
         self, in_dim: int, num_constraints: int = 3, hidden_dim: int = HIDDEN_DIM
     ) -> None:
@@ -384,30 +224,14 @@ class _CostCriticNet(nn.Module):
             nn.Linear(in_dim, hidden_dim), nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim), nn.ReLU(),
             nn.Linear(hidden_dim, num_constraints),
-            nn.Sigmoid(),   # output ∈ [0,1]: predicted constraint violation probability
+            nn.Sigmoid(),
         )
 
     def forward(self, feat: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
         return self.net(torch.cat([feat, action], dim=-1))
 
 
-# ==========================================================================
-# Large-Grid Mock Environment (50+ buildings)
-# ==========================================================================
-
 class LargeGridEnv:
-    """Mock environment with a configurable number of buildings.
-
-    Generates `num_buildings` independent _MockBuilding instances.
-    API matches STEMSEnvironment.
-
-    Parameters
-    ----------
-    num_buildings : int – number of buildings (default 50)
-    seed          : int
-    episode_len   : int – timesteps per episode (default 8760 = 1 year)
-    """
-
     def __init__(
         self,
         num_buildings: int = 50,
@@ -427,7 +251,6 @@ class LargeGridEnv:
         ]
         self._t = 0
 
-    # ------------------------------------------------------------------
     def reset(self) -> Tuple[List[np.ndarray], Dict]:
         self._t = 0
         for b in self._buildings:
@@ -445,7 +268,6 @@ class LargeGridEnv:
         return obs, rewards, done, False, {}
 
     def get_building_info(self) -> Dict[str, Any]:
-        """Return positions and features for BuildingGraph (grid layout)."""
         B = self.num_buildings
         positions = [
             [float(i % 10) * 100.0, float(i // 10) * 100.0] for i in range(B)
@@ -454,40 +276,7 @@ class LargeGridEnv:
         return {"positions": positions, "features": features}
 
 
-# ==========================================================================
-# Hierarchical STEMS Agent
-# ==========================================================================
-
 class HierarchicalSTEMSAgent:
-    """Hierarchical DRL agent for multi-building energy management.
-
-    Key differences from flat STEMSAgent:
-      - Graph coarsening: coordinator sees K clusters, not B buildings
-      - Event triggering: only active buildings communicate each step
-      - Lightweight local policies (no Transformer or full GCN)
-      - Off-policy SAC with replay buffer (same as SingleAgentSAC + Lagrangian)
-
-    Parameters
-    ----------
-    obs_dim        : int – per-building observation dimension
-    action_dim     : int – per-building action dimension
-    num_buildings  : int – number of buildings B
-    adj            : (B, B) ndarray – optional adjacency for cluster assignment
-    cluster_size   : int – target buildings per cluster (K = ceil(B / cluster_size))
-    event_threshold: float – trigger threshold (default 0.5)
-    local_dim      : int – LocalEncoder output dim
-    cluster_dim    : int – ClusterCoordinator output dim
-    hidden_dim     : int – policy and critic hidden layer width
-    lr             : float – learning rate for all optimisers
-    gamma          : float – discount factor
-    tau            : float – target network soft update coefficient
-    alpha_ent      : float – initial SAC entropy temperature
-    cbf_config     : CBFConfig – CBF shield parameters
-    lagrangian_cfg : LagrangianConfig – Lagrangian parameters
-    use_cbf        : bool – whether to apply the CBF safety shield
-    device         : str
-    """
-
     def __init__(
         self,
         obs_dim: int,
@@ -523,9 +312,6 @@ class HierarchicalSTEMSAgent:
         if cbf_config is not None:
             cbf_cfg = cbf_config
         else:
-            # Scale P_grid_max linearly with num_buildings.
-            # The default 300 kW is calibrated for the 3-building CityLearn env
-            # (~100 kW headroom per building).  For B buildings we keep that ratio.
             _base = CBFConfig()
             cbf_cfg = CBFConfig(
                 SOC_min=_base.SOC_min,
@@ -538,18 +324,15 @@ class HierarchicalSTEMSAgent:
         self._lag_cfg = lag_cfg
         self._cbf_cfg = cbf_cfg
 
-        # ---- Cluster assignment ----
         self.cluster = ClusterAssignment(num_buildings, adj=adj, cluster_size=cluster_size)
         K = self.cluster.K
 
-        # ---- Event trigger ----
         self.event_trigger = EventTrigger(num_buildings, threshold=event_threshold)
 
-        # ---- Neural modules ----
         self.encoder     = LocalEncoder(obs_dim, local_dim).to(self.device)
         self.coordinator = ClusterCoordinator(local_dim, cluster_dim, NUM_HEADS).to(self.device)
 
-        self._feat_dim = local_dim + cluster_dim   # policy input dimension
+        self._feat_dim = local_dim + cluster_dim
         feat_dim = self._feat_dim
 
         self.actors = nn.ModuleList([
@@ -557,7 +340,6 @@ class HierarchicalSTEMSAgent:
             for _ in range(num_buildings)
         ]).to(self.device)
 
-        # Double Q-critics per building
         self.q1_nets = nn.ModuleList([
             _QNet(feat_dim + action_dim, hidden_dim) for _ in range(num_buildings)
         ]).to(self.device)
@@ -567,33 +349,26 @@ class HierarchicalSTEMSAgent:
         self.q1_targets = copy.deepcopy(self.q1_nets).to(self.device)
         self.q2_targets = copy.deepcopy(self.q2_nets).to(self.device)
 
-        # Cost critics (Lagrangian safety)
         num_constraints = lag_cfg.num_constraints
         self.cost_critics = nn.ModuleList([
             _CostCriticNet(feat_dim + action_dim, num_constraints, hidden_dim)
             for _ in range(num_buildings)
         ]).to(self.device)
 
-        # ---- Lagrangian multipliers  (num_constraints,) per agent; shared ----
         self.log_lambdas = nn.Parameter(
             torch.full((num_constraints,), math.log(lag_cfg.lambda_init), device=self.device)
         )
 
-        # ---- Entropy temperature (auto-tuned via log_alpha) ----
         self.target_entropy = -float(action_dim)
         self.log_alpha = nn.Parameter(
             torch.tensor(math.log(alpha_ent), device=self.device)
         )
 
-        # ---- Optimisers ----
-        # Shared encoder + coordinator: updated once per batch via the accumulated
-        # actor loss (all buildings contribute, single backward pass).
         shared_params = (
             list(self.encoder.parameters())
             + list(self.coordinator.parameters())
         )
         self.shared_opt = optim.Adam(shared_params, lr=lr)
-        # Per-building actor optimisers: only local policy parameters.
         self.actor_opts = [
             optim.Adam(list(self.actors[i].parameters()), lr=lr)
             for i in range(num_buildings)
@@ -613,7 +388,6 @@ class HierarchicalSTEMSAgent:
         self.lambda_opt = optim.Adam([self.log_lambdas], lr=lag_cfg.lambda_lr)
         self.alpha_opt  = optim.Adam([self.log_alpha],   lr=lr)
 
-        # ---- Safety shield ----
         if use_cbf:
             self.cbf = CBFShield(
                 cbf_cfg,
@@ -623,12 +397,8 @@ class HierarchicalSTEMSAgent:
         else:
             self.cbf = None
 
-        # ---- Cached cluster latents (warm-start event trigger) ----
         self._cached_cluster_latents: Optional[torch.Tensor] = None
 
-    # ------------------------------------------------------------------
-    # Internal: build per-building feature vector given obs
-    # ------------------------------------------------------------------
 
     @torch.no_grad()
     def _encode_all(
@@ -636,12 +406,11 @@ class HierarchicalSTEMSAgent:
         obs_list: List[np.ndarray],
         fired: Optional[np.ndarray] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Return (local_reprs (B, local_dim), cluster_latents (K, cluster_dim))."""
         obs_t = torch.tensor(
             np.array(obs_list, dtype=np.float32), dtype=torch.float32, device=self.device
-        )  # (B, obs_dim)
+        )
 
-        local_reprs = self.encoder(obs_t)   # (B, local_dim)
+        local_reprs = self.encoder(obs_t)
 
         fired_arr = np.asarray(
             fired if fired is not None else np.ones(self.B, dtype=np.uint8), dtype=np.uint8
@@ -650,24 +419,20 @@ class HierarchicalSTEMSAgent:
 
         cluster_latents = self.coordinator(
             local_reprs, fired_t, self.cluster, self._cached_cluster_latents
-        )  # (K, cluster_dim)
+        )
 
         self._cached_cluster_latents = cluster_latents.detach()
         return local_reprs, cluster_latents
 
     def _build_feat(
         self,
-        local_reprs: torch.Tensor,    # (B, local_dim)
-        cluster_latents: torch.Tensor,  # (K, cluster_dim)
+        local_reprs: torch.Tensor,
+        cluster_latents: torch.Tensor,
     ) -> torch.Tensor:
-        """Concatenate each building's local_repr with its cluster latent → (B, feat_dim)."""
         cluster_idx = torch.tensor(self.cluster.labels, dtype=torch.long, device=self.device)
-        assigned    = cluster_latents[cluster_idx]   # (B, cluster_dim)
-        return torch.cat([local_reprs, assigned], dim=-1)   # (B, feat_dim)
+        assigned    = cluster_latents[cluster_idx]
+        return torch.cat([local_reprs, assigned], dim=-1)
 
-    # ------------------------------------------------------------------
-    # select_action
-    # ------------------------------------------------------------------
 
     def select_action(
         self,
@@ -677,11 +442,11 @@ class HierarchicalSTEMSAgent:
     ) -> np.ndarray:
         fired = self.event_trigger(obs_list)
         local_reprs, cluster_latents = self._encode_all(obs_list, fired)
-        feats = self._build_feat(local_reprs, cluster_latents)   # (B, feat_dim)
+        feats = self._build_feat(local_reprs, cluster_latents)
 
         actions = np.zeros((self.B, self.action_dim), dtype=np.float32)
         for i in range(self.B):
-            feat_i = feats[i].unsqueeze(0)   # (1, feat_dim)
+            feat_i = feats[i].unsqueeze(0)
             if explore:
                 with torch.no_grad():
                     a, _ = self.actors[i].sample(feat_i)
@@ -691,21 +456,13 @@ class HierarchicalSTEMSAgent:
                     a = torch.tanh(mean)
             actions[i] = np.array(a.squeeze(0).detach().tolist(), dtype=np.float32)
 
-        # CBF safety projection
         if self.cbf is not None:
             actions = self.cbf.project(actions, obs_list)
 
         return actions
 
-    # ------------------------------------------------------------------
-    # update (SAC + Lagrangian)
-    # ------------------------------------------------------------------
 
     def update(self, batch: Dict[str, Any]) -> Dict[str, float]:
-        """One SAC + Lagrangian gradient step on a mini-batch.
-
-        The batch is structured exactly as ReplayBuffer.sample() returns.
-        """
         N = len(batch["obs"])
         if N == 0:
             return {}
@@ -719,24 +476,18 @@ class HierarchicalSTEMSAgent:
             "cost_loss": 0.0,  "lambda_loss": 0.0,
         }
 
-        # ---- Build per-building obs tensors ----
         obs_t      = torch.tensor(
             np.array([[batch["obs"][n][b] for b in range(self.B)] for n in range(N)]),
             dtype=torch.float32, device=device,
-        )  # (N, B, obs_dim)
+        )
         next_obs_t = torch.tensor(
             np.array([[batch["next_obs"][n][b] for b in range(self.B)] for n in range(N)]),
             dtype=torch.float32, device=device,
-        )  # (N, B, obs_dim)
+        )
         actions_t  = torch.tensor(batch["actions"], dtype=torch.float32, device=device)
-        # (N, B, action_dim)
         rewards_t  = torch.tensor(batch["rewards"], dtype=torch.float32, device=device)
-        # (N, B)
         dones_t    = torch.tensor(batch["dones"],   dtype=torch.float32, device=device)
-        # (N,)
 
-        # ---- Encode current and next observations (no grad for targets) ----
-        # Flatten B dimension for encoder batch
         obs_flat      = obs_t.view(N * self.B, self.obs_dim)
         next_obs_flat = next_obs_t.view(N * self.B, self.obs_dim)
 
@@ -747,11 +498,9 @@ class HierarchicalSTEMSAgent:
         local_reprs      = local_reprs_flat.view(N, self.B, -1)
         local_reprs_next = local_reprs_next_flat.view(N, self.B, -1)
 
-        # Coordinator: run per sample (K is small, this is fast even for N=256)
-        # For training we use all-fired mask (no event gating; gating is inference-only)
         fired_all = torch.ones(self.B, dtype=torch.bool, device=device)
 
-        coord_latents      = []   # List[Tensor (K, cluster_dim)], len N
+        coord_latents      = []
         coord_latents_next = []
         with torch.no_grad():
             for n in range(N):
@@ -766,32 +515,26 @@ class HierarchicalSTEMSAgent:
 
         cluster_idx = torch.tensor(
             self.cluster.labels, dtype=torch.long, device=device
-        )  # (B,)
+        )
 
-        # ---- Build feat tensors for all buildings simultaneously ----
-        # feats_all:      (N, B, feat_dim)
-        # feats_next_all: (N, B, feat_dim)
         feat_dim = self._feat_dim
         feats_all      = torch.zeros(N, self.B, feat_dim, device=device)
         feats_next_all = torch.zeros(N, self.B, feat_dim, device=device)
         for n in range(N):
-            assigned      = coord_latents[n][cluster_idx]       # (B, cluster_dim)
+            assigned      = coord_latents[n][cluster_idx]
             assigned_next = coord_latents_next[n][cluster_idx]
             feats_all[n]      = torch.cat([local_reprs[n], assigned],      dim=-1)
             feats_next_all[n] = torch.cat([local_reprs_next[n], assigned_next], dim=-1)
 
-        # ---- Per-building Q-critic and cost-critic updates ----
-        # Use detached feats so Q-net gradients don't flow into shared encoder.
         feats_det      = feats_all.detach()
         feats_next_det = feats_next_all.detach()
 
         for b in range(self.B):
-            feat_b      = feats_det[:, b, :]         # (N, feat_dim)
-            feat_next_b = feats_next_det[:, b, :]    # (N, feat_dim)
-            act_b       = actions_t[:, b, :]         # (N, action_dim)
-            rew_b       = rewards_t[:, b]             # (N,)
+            feat_b      = feats_det[:, b, :]
+            feat_next_b = feats_next_det[:, b, :]
+            act_b       = actions_t[:, b, :]
+            rew_b       = rewards_t[:, b]
 
-            # ---- Q-critic update ----
             with torch.no_grad():
                 next_a_b, next_lp_b = self.actors[b].sample(feat_next_b)
                 q1_next = self.q1_targets[b](feat_next_b, next_a_b)
@@ -808,10 +551,8 @@ class HierarchicalSTEMSAgent:
             self.q_opts[b].step()
             losses["q_loss"] += q_loss.item()
 
-            # ---- Cost critic update ----
             with torch.no_grad():
                 cost_next = self.cost_critics[b](feat_next_b, next_a_b)
-                # Estimate constraint violation labels from stored observations
                 soc_b  = torch.tensor(
                     [batch["obs"][n][b][_IDX_SOC_ELEC] for n in range(N)],
                     dtype=torch.float32, device=device,
@@ -836,11 +577,7 @@ class HierarchicalSTEMSAgent:
             self.cost_opts[b].step()
             losses["cost_loss"] += cost_loss.item()
 
-        # ---- Actor (policy) update — re-encode WITH gradient ----
-        # We re-run the encoder+coordinator here so that gradient flows into
-        # the shared parameters.  All building losses are accumulated before
-        # the single backward call to avoid double-backward errors.
-        local_reprs_a_flat = self.encoder(obs_flat)           # (N*B, local_dim)
+        local_reprs_a_flat = self.encoder(obs_flat)
         local_reprs_a      = local_reprs_a_flat.view(N, self.B, -1)
 
         fired_all_a = torch.ones(self.B, dtype=torch.bool, device=device)
@@ -858,13 +595,11 @@ class HierarchicalSTEMSAgent:
         for b in range(self.B):
             feat_b_a = feats_actor[:, b, :]
             a_new, lp_new = self.actors[b].sample(feat_b_a)
-            # Use detached Q-nets (no gradient into Q from actor update)
             with torch.no_grad():
                 q1_val = self.q1_nets[b](feats_det[:, b, :], a_new.detach())
                 q2_val = self.q2_nets[b](feats_det[:, b, :], a_new.detach())
                 cost_val = self.cost_critics[b](feats_det[:, b, :], a_new.detach())
                 safety_penalty = (lambdas.unsqueeze(0) * cost_val).sum(dim=-1)
-            # Q-values wrt actor's action (allow grad through a_new)
             q1_new = self.q1_nets[b](feats_det[:, b, :], a_new)
             q2_new = self.q2_nets[b](feats_det[:, b, :], a_new)
             q_min  = torch.min(q1_new, q2_new)
@@ -872,8 +607,6 @@ class HierarchicalSTEMSAgent:
             total_actor_loss = total_actor_loss + actor_loss_b
             losses["actor_loss"] += actor_loss_b.item()
 
-        # Single backward for all buildings → shared encoder/coordinator get
-        # gradients from every building's policy loss simultaneously.
         self.shared_opt.zero_grad()
         for opt in self.actor_opts:
             opt.zero_grad()
@@ -882,14 +615,12 @@ class HierarchicalSTEMSAgent:
         for opt in self.actor_opts:
             opt.step()
 
-        # ---- Soft target updates ----
         for b in range(self.B):
             for p, tp in zip(self.q1_nets[b].parameters(), self.q1_targets[b].parameters()):
                 tp.data.copy_(self.tau * p.data + (1 - self.tau) * tp.data)
             for p, tp in zip(self.q2_nets[b].parameters(), self.q2_targets[b].parameters()):
                 tp.data.copy_(self.tau * p.data + (1 - self.tau) * tp.data)
 
-        # ---- Entropy temperature update (once per batch) ----
         lp_sum = torch.tensor(0.0, device=device)
         for b in range(self.B):
             with torch.no_grad():
@@ -900,34 +631,27 @@ class HierarchicalSTEMSAgent:
         alpha_loss.backward()
         self.alpha_opt.step()
 
-        # ---- Lagrangian multiplier update (gradient ascent on λ) ----
         lambda_loss = torch.tensor(0.0, device=device)
         for b in range(self.B):
             feat_b = feats_det[:, b, :]
             act_b  = actions_t[:, b, :]
             with torch.no_grad():
-                c_pred = self.cost_critics[b](feat_b, act_b)  # (N, K)
-            # λ_k ← λ_k + lr * (E[c_k] - d)
+                c_pred = self.cost_critics[b](feat_b, act_b)
             constraint_violation = c_pred.mean(dim=0) - self._lag_cfg.cost_limit
             lambda_loss = lambda_loss - (self.log_lambdas * constraint_violation.detach()).sum()
 
         self.lambda_opt.zero_grad()
         lambda_loss.backward()
         self.lambda_opt.step()
-        # Clamp log_lambdas so exp(log_lambda) stays within [0, lambda_max]
         log_max = math.log(self._lag_cfg.lambda_max)
         self.log_lambdas.data.clamp_(min=-10.0, max=log_max)
         losses["lambda_loss"] = lambda_loss.item()
 
-        # Normalise per building
         losses["actor_loss"] /= self.B
         losses["q_loss"]     /= self.B
         losses["cost_loss"]  /= self.B
         return losses
 
-    # ------------------------------------------------------------------
-    # Save / Load
-    # ------------------------------------------------------------------
 
     def save(self, path: str) -> None:
         os.makedirs(path, exist_ok=True)
@@ -939,7 +663,6 @@ class HierarchicalSTEMSAgent:
         torch.save(self.cost_critics.state_dict(),os.path.join(path, "hier_cost.pt"))
         torch.save(self.log_lambdas.data,         os.path.join(path, "hier_lambdas.pt"))
         torch.save(self.log_alpha.data,           os.path.join(path, "hier_log_alpha.pt"))
-        # Save cluster assignment for reproducibility
         np.save(os.path.join(path, "cluster_labels.npy"), self.cluster.labels)
 
     def load(self, path: str) -> None:

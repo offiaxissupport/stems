@@ -1,41 +1,4 @@
 #!/usr/bin/env python3
-"""Aggregate run records into scenario-level estimates, contrasts and tests.
-
-Design
-------
-A *scenario* is one (season window, building subset, caps) condition. Training
-seeds are nested inside scenarios, so they are not independent replicates of the
-between-scenario variation: pooling them as if they were inflates n and makes
-95% intervals cover far less than 95% (simulated coverage 0.68-0.89 for
-within-scenario correlations 0.9-0.25). Every estimate here is therefore built
-in two stages:
-
-1. **Within a scenario**, average over seeds. For a contrast between two
-   learning arms, the average is over *matched* seeds only (same seed = same
-   initial networks and exploration stream, a common-random-numbers pairing); a
-   seed present in one arm but not the other is dropped, never substituted. A
-   deterministic arm (rule-based control) has one run per scenario and is used
-   as is.
-2. **Across scenarios**, the scenario-level values are the replicates:
-   mean, Student-t 95% interval with ``df = n_scenarios - 1``, and a two-sided
-   one-sample t-test of the paired difference against zero.
-
-Seed spread is reported separately (root-mean-square within-scenario SD), as a
-description of training noise, not as a source of replication.
-
-Inference is confined to the pre-declared ``PRIMARY_KPIS`` x ``CONTRASTS`` on the
-pooled scenarios, with a Holm correction across that family. Every other number
-is descriptive and labelled as such.
-
-Runs are excluded only for a failed actuator check (``verified is False``), and
-those are listed for investigation; counts of verified / insufficient-evidence /
-failed runs are shown per arm. Records produced by different code (fingerprint),
-episode counts or window lengths are refused unless ``--allow-mixed`` is given.
-
-Usage
------
-    .venv/Scripts/python -m experiments.aggregate results/ablation_v1
-"""
 
 from __future__ import annotations
 
@@ -59,7 +22,6 @@ DESCRIPTIVE_KPIS = [
     "ev_missed_departure_rate", "ev_energy_shortfall_kwh", "cap_exceedance_kwh",
 ]
 
-# (arm, reference, question the difference answers)
 CONTRASTS: List[Tuple[str, str, str]] = [
     ("rl+calibrated", "rl", "what the safety layer adds to a learned policy"),
     ("rl+calibrated", "rl+basic", "a calibrated battery model vs the uniform 0.1 rate"),
@@ -72,13 +34,8 @@ CONTRASTS: List[Tuple[str, str, str]] = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# Statistics
-# ---------------------------------------------------------------------------
-
 def t_critical(n: int) -> float:
-    """Two-sided 95% Student-t critical value for n samples."""
-    from scipy.stats import t   # required: a normal approximation is wrong at small n
+    from scipy.stats import t
 
     return float(t.ppf(0.975, n - 1))
 
@@ -88,7 +45,6 @@ def _finite(x: Any) -> bool:
 
 
 def summarize(values: List[Any]) -> Dict[str, Any]:
-    """Mean, SD, t interval and two-sided p (H0: mean = 0) of independent replicates."""
     v = np.asarray([x for x in values if _finite(x)], dtype=float)
     out: Dict[str, Any] = {"n": int(v.size), "mean": None, "std": None, "ci95": None, "p": None}
     if v.size == 0:
@@ -109,7 +65,6 @@ def summarize(values: List[Any]) -> Dict[str, Any]:
 
 
 def holm(pvalues: Dict[Any, Optional[float]], alpha: float = 0.05) -> Dict[Any, Dict[str, Any]]:
-    """Holm step-down adjustment. Entries without a p-value are left untested."""
     tested = sorted(((p, k) for k, p in pvalues.items() if p is not None), key=lambda x: x[0])
     m, running, out = len(tested), 0.0, {}
     for rank, (p, k) in enumerate(tested):
@@ -120,10 +75,6 @@ def holm(pvalues: Dict[Any, Optional[float]], alpha: float = 0.05) -> Dict[Any, 
             out[k] = {"p": None, "p_holm": None, "significant": None}
     return out
 
-
-# ---------------------------------------------------------------------------
-# Records
-# ---------------------------------------------------------------------------
 
 def load_records(root: Path) -> List[Dict[str, Any]]:
     records = []
@@ -152,7 +103,6 @@ def _verified(r: Dict[str, Any]) -> Optional[bool]:
 
 
 def provenance_conflicts(records: List[Dict[str, Any]]) -> List[str]:
-    """Fields that must agree across a grid before its runs can be compared."""
     problems = []
     fields = {
         "code fingerprint": lambda r: (r["meta"].get("code") or {}).get("fingerprint"),
@@ -175,7 +125,6 @@ def provenance_conflicts(records: List[Dict[str, Any]]) -> List[str]:
 
 
 def scenario_table(records: List[Dict[str, Any]], kpi: str) -> Dict[str, Dict[str, Dict[int, float]]]:
-    """arm -> scenario key -> seed -> value."""
     table: Dict[str, Dict[str, Dict[int, float]]] = defaultdict(lambda: defaultdict(dict))
     for r in records:
         v = r["eval"].get(kpi)
@@ -186,7 +135,6 @@ def scenario_table(records: List[Dict[str, Any]], kpi: str) -> Dict[str, Dict[st
 
 def paired_scenario_differences(table, arm: str, ref: str, learns: Dict[str, bool],
                                 scenarios: List[str]) -> Dict[str, Dict[str, Any]]:
-    """Scenario -> {diff, seeds}: arm minus reference, seeds matched where both learn."""
     out = {}
     for s in scenarios:
         a, b = table.get(arm, {}).get(s), table.get(ref, {}).get(s)
@@ -206,17 +154,12 @@ def paired_scenario_differences(table, arm: str, ref: str, learns: Dict[str, boo
 
 
 def arm_level(table, arm: str, scenarios: List[str]) -> Dict[str, Any]:
-    """Scenario-level mean of one arm, plus the within-scenario seed spread."""
     per = [table[arm][s] for s in scenarios if s in table.get(arm, {})]
     s = summarize([float(np.mean(list(v.values()))) for v in per])
     sds = [float(np.std(list(v.values()), ddof=1)) for v in per if len(v) > 1]
     s["seed_sd"] = float(math.sqrt(np.mean(np.square(sds)))) if sds else None
     return s
 
-
-# ---------------------------------------------------------------------------
-# Formatting
-# ---------------------------------------------------------------------------
 
 def fmt(s: Dict[str, Any], rate: bool = False) -> str:
     if s["mean"] is None:
@@ -226,14 +169,10 @@ def fmt(s: Dict[str, Any], rate: bool = False) -> str:
     if not s["std"]:
         return f"{s['mean']:.4g} (no variation, n={s['n']})"
     lo, hi = s["ci95"]
-    if rate:   # an arm's mean rate cannot leave [0, 1]; the interval is clipped for display
+    if rate:
         lo, hi = max(lo, 0.0), min(hi, 1.0)
     return f"{s['mean']:.4g} [{lo:.4g}, {hi:.4g}] (n={s['n']})"
 
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
 
 def analyse(records: List[Dict[str, Any]], kpis: List[str]) -> Dict[str, Any]:
     learns = {_arm(r): _learns(r) for r in records}

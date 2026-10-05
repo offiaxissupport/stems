@@ -1,11 +1,3 @@
-"""Evaluate a policy saved by one grid under the shield of the current code.
-
-The same trained policy, the same evaluation window, the same warm-up as
-``experiments.runner.run_one``; only the code around the policy differs. Used to
-separate what a change to the shield does from what retraining does (report, 6.8).
-
-    .venv/Scripts/python experiments/diagnostics/replay_saved_policy.py results/ev_rl_v1 rl+calibrated winter 0
-"""
 import json
 import os
 import sys
@@ -15,11 +7,11 @@ REPO = Path(__file__).resolve().parents[2]
 os.chdir(REPO)
 sys.path.insert(0, str(REPO))
 
-from experiments.controllers import ARMS, build_controller          # noqa: E402
-from experiments.runner import _window_len, code_fingerprint, evaluate, make_config  # noqa: E402
-from experiments.scenario import Scenario                           # noqa: E402
-from stems.environment import STEMSEnvironment                      # noqa: E402
-from stems.utils import set_seed                                    # noqa: E402
+from experiments.controllers import ARMS, build_controller
+from experiments.runner import _window_len, code_fingerprint, evaluate, make_config
+from experiments.scenario import Scenario
+from stems.environment import STEMSEnvironment
+from stems.utils import set_seed
 
 root, arm_name, season, seed = Path(sys.argv[1]), sys.argv[2], sys.argv[3], int(sys.argv[4])
 stored = None

@@ -1,36 +1,4 @@
 #!/usr/bin/env python3
-"""EV charging under a shared power cap: which rule keeps the deadlines, and at what cap.
-
-Every run replays one season's window of the housing-and-EV schema with a fixed
-controller for the house devices (``--base``), a fixed way of asking for charging
-(``--policy``) and one fleet shield (``--rule``), under one cap. Nothing is
-learned here: the question is what the shield itself guarantees.
-
-House devices (``base``)
-    idle       thermostat only; battery and hot-water tank untouched
-    rbc        the time-of-use rule: battery charged 10:00-16:00, discharged to cover
-               the house's own load 16:00-21:00 -- which is when the cars arrive
-    rbc+shed   the same, plus a set-point shift: pre-condition 12:00-16:00, coast
-               16:00-21:00 (within the 1.5 degC offset range)
-
-Charging requests (``policy``)
-    asap       full power whenever a connected car is below its requirement
-    offpeak    the same, but not during the 16:00-21:00 tariff peak
-    none       never asks: the shield alone must get the cars charged
-
-Shield (``rule``): see ``stems.fleet.FleetShield``. ``noguard`` is ``independent``
-without the latest-start trigger (the request, untouched).
-
-Forecast of the load the fleet must fit around (``forecast``)
-    replay     the same scenario recorded without charging: perfect foresight
-    causal     persistence, with a calibrated margin (``BaseLoadForecaster``)
-
-Vehicle schedules in this schema are synthetic; the buildings are real.
-
-    .venv/Scripts/python -m experiments.ev_coupling --stage rules --workers 6
-    .venv/Scripts/python -m experiments.ev_coupling --stage policy --workers 6
-    .venv/Scripts/python -m experiments.ev_coupling --stage flexibility --workers 6
-"""
 
 from __future__ import annotations
 
@@ -53,8 +21,8 @@ if str(REPO) not in sys.path:
 
 EV_SCHEMA = "citylearn_schemas/tx_travis_8b_ev/schema.json"
 _IDX_HOUR, _IDX_NET, _IDX_PRICE = 1, 20, 21
-PEAK_HOURS = range(17, 22)          # CityLearn hours 17..21 = 16:00-21:00
-PREP_HOURS = range(13, 17)          # 12:00-16:00
+PEAK_HOURS = range(17, 22)
+PREP_HOURS = range(13, 17)
 ALL_RULES = ("noguard", "independent", "static", "proportional", "edf", "llf", "sllf", "lp")
 MISS_TOL = 1e-3
 
@@ -69,8 +37,6 @@ def _env(season: str, days: int):
 
 
 class HouseController:
-    """The non-EV devices: returns a (B, action_dim) action with the EV column zero."""
-
     def __init__(self, env, base: str) -> None:
         from stems.baselines import RuleBasedAgent
         from stems.cbf import CBFShield
@@ -95,15 +61,14 @@ class HouseController:
         if self.base == "rbc+shed":
             hour = int(round(float(obs[0][_IDX_HOUR])))
             heating = env.executed_actions[:, env.hvac_action_index] >= 0.0
-            if hour in PREP_HOURS:          # store heat (or coolth) before the peak
+            if hour in PREP_HOURS:
                 a[:, env.hvac_action_index] = np.where(heating, 1.0, -1.0)
-            elif hour in PEAK_HOURS:        # and coast through it
+            elif hour in PEAK_HOURS:
                 a[:, env.hvac_action_index] = np.where(heating, -1.0, 1.0)
-        return self.shield.project(a, obs)   # keeps the house batteries in their band
+        return self.shield.project(a, obs)
 
 
 def record_base(season: str, days: int, base: str) -> np.ndarray:
-    """(T, B) net load of each building with no EV charging: the replay forecast."""
     env = _env(season, days)
     house = HouseController(env, base)
     obs, _ = env.reset()
@@ -116,7 +81,6 @@ def record_base(season: str, days: int, base: str) -> np.ndarray:
 
 
 def run(spec: Dict[str, Any]) -> Dict[str, Any]:
-    """One rollout. ``spec``: season, days, base, policy, rule, forecast, cap, base_path."""
     os.environ.setdefault("OMP_NUM_THREADS", "1")
     t0 = time.time()
     out = dict(spec)
@@ -173,11 +137,11 @@ def run(spec: Dict[str, Any]) -> Dict[str, Any]:
 
         imports, base_imports = np.array(imports), np.array(base_imports)
         over = np.maximum(imports - cap, 0.0)
-        avoidable = over[base_imports <= cap]            # the house load alone was under the cap
+        avoidable = over[base_imports <= cap]
         short = np.array([max(d["required_soc"] - d["soc"], 0.0) for d in departures])
         short_kwh = np.array([s * d["capacity_kwh"] for s, d in zip(short, departures)])
         gaps = np.array([max(d["required_soc"], 1e-6) for d in departures])
-        served = 1.0 - short / gaps                      # share of the requirement delivered
+        served = 1.0 - short / gaps
         per_vehicle: Dict[int, List[float]] = {}
         for d, s in zip(departures, served):
             per_vehicle.setdefault(int(d["building"]), []).append(float(s))
@@ -206,18 +170,12 @@ def run(spec: Dict[str, Any]) -> Dict[str, Any]:
 
 
 STAGES = {
-    # which rule keeps the deadlines, with and without foresight
     "rules": dict(bases=["idle"], policies=["asap"], rules=list(ALL_RULES),
                   forecasts=["replay", "causal"]),
-    # does it matter how the cars ask?
     "policy": dict(bases=["idle"], policies=["asap", "offpeak", "none"], rules=["llf", "lp"],
                    forecasts=["replay"]),
-    # under a causal forecast, what do planning every departure early and holding
-    # the later hours to the day-ahead forecast's own margin buy? (The margin only
-    # enters the programme: the sorting rules do not look past this hour.)
     "reserve": dict(bases=["idle"], policies=["asap", "none"], rules=["llf", "lp"],
                     forecasts=["causal"], reserves=[0, 1, 2], leads=[False, True]),
-    # how much room do the house's battery and thermal mass make for the cars?
     "flexibility": dict(bases=["idle", "rbc", "rbc+shed"], policies=["asap"],
                         rules=["llf", "lp"], forecasts=["replay"]),
 }
@@ -235,7 +193,7 @@ def main() -> None:
     args = ap.parse_args()
     from experiments.runner import code_fingerprint
 
-    fingerprint = code_fingerprint()      # the code as it is when the study starts
+    fingerprint = code_fingerprint()
     stage = STAGES[args.stage]
     out_dir = REPO / args.out
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -252,9 +210,9 @@ def main() -> None:
             stage["forecasts"], args.caps, stage.get("reserves", [0]),
             stage.get("leads", [False])):
         if rule in ("noguard", "independent") and forecast == "causal":
-            continue                      # these rules never look at the forecast
+            continue
         if lead and rule != "lp":
-            continue                      # only the programme plans the later hours
+            continue
         specs.append(dict(stage=args.stage, season=season, days=args.days, base=base,
                           policy=policy, rule=rule, forecast=forecast, cap=cap, reserve=reserve,
                           lead=lead,

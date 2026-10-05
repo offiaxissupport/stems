@@ -1,17 +1,4 @@
 #!/usr/bin/env python3
-"""
-Benchmark: Centralized SAC (pure PyTorch) on CityLearn / STEMS mock.
-
-Trains a single SAC agent that controls ALL buildings jointly with a
-flattened obs/action space.  Evaluates using the same MetricsCalculator
-as evaluate.py so results are directly comparable for Table I.
-
-No stable-baselines3 or gymnasium dependency — pure PyTorch only.
-
-Usage:
-    python -B benchmark_sac.py --episodes 15 --seed 42 --save-dir benchmarks/sac/
-    python -B benchmark_sac.py --eval-only --save-dir benchmarks/sac/
-"""
 
 from __future__ import annotations
 
@@ -33,17 +20,11 @@ from stems.metrics import MetricsCalculator
 from stems.utils import set_seed
 
 
-# ---------------------------------------------------------------------------
-# Networks
-# ---------------------------------------------------------------------------
-
 LOG_STD_MAX = 2
 LOG_STD_MIN = -5
 
 
 class _Actor(nn.Module):
-    """Gaussian policy with tanh squashing."""
-
     def __init__(self, obs_dim: int, action_dim: int, hidden: int = 256) -> None:
         super().__init__()
         self.net = nn.Sequential(
@@ -79,8 +60,6 @@ class _Actor(nn.Module):
 
 
 class _Critic(nn.Module):
-    """Twin Q-network."""
-
     def __init__(self, obs_dim: int, action_dim: int, hidden: int = 256) -> None:
         super().__init__()
         inp = obs_dim + action_dim
@@ -101,10 +80,6 @@ class _Critic(nn.Module):
         x = torch.cat([obs, action], dim=-1)
         return self.q1(x).squeeze(-1), self.q2(x).squeeze(-1)
 
-
-# ---------------------------------------------------------------------------
-# Replay Buffer
-# ---------------------------------------------------------------------------
 
 class _ReplayBuffer:
     def __init__(self, capacity: int, obs_dim: int, action_dim: int) -> None:
@@ -147,17 +122,7 @@ class _ReplayBuffer:
         return self._size
 
 
-# ---------------------------------------------------------------------------
-# Centralized SAC Agent
-# ---------------------------------------------------------------------------
-
 class CentralSAC:
-    """Centralized SAC: one actor/critic over all buildings jointly.
-
-    obs_dim_total = B * obs_dim_per_building
-    act_dim_total = B * action_dim_per_building
-    """
-
     def __init__(
         self,
         obs_dim: int,
@@ -205,7 +170,6 @@ class CentralSAC:
         self.replay = _ReplayBuffer(buffer_size, self.flat_obs, self.flat_act)
         self._total_steps = 0
 
-    # ------------------------------------------------------------------
     def _flatten(self, obs_list: List[np.ndarray]) -> np.ndarray:
         return np.concatenate(obs_list, axis=0).astype(np.float32)
 
@@ -290,10 +254,6 @@ class CentralSAC:
         self.critic_target.load_state_dict(self.critic.state_dict())
 
 
-# ---------------------------------------------------------------------------
-# Training loop
-# ---------------------------------------------------------------------------
-
 def train(
     episodes: int,
     seed: int,
@@ -346,10 +306,6 @@ def train(
     print(f"\n[CentralSAC] Saved to {save_dir}")
 
 
-# ---------------------------------------------------------------------------
-# Evaluation
-# ---------------------------------------------------------------------------
-
 def evaluate(
     save_dir: str,
     schema: Optional[str],
@@ -384,10 +340,6 @@ def evaluate(
 
     return {k: float(np.mean([m[k] for m in all_metrics])) for k in all_metrics[0]}
 
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Centralized SAC benchmark (pure PyTorch)")

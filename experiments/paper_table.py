@@ -1,20 +1,4 @@
 #!/usr/bin/env python3
-"""Our results in the layout of the STEMS paper's Table I, next to its numbers.
-
-The paper (Zhang, Wu, Zinflou, Boulet 2025, arXiv:2510.14112v2) reports twelve
-months on eight Travis County buildings, five seeds, every metric but the last
-two normalised to its rule-based controller. This prints the same table for a
-results folder produced with ``--seasons year`` (same protocol: trained on the
-year, evaluated on the same twelve months), normalised to *our* rule-based arm.
-
-What is and is not comparable is stated under the table and is part of it:
-the paper's buildings are a residential / commercial / mixed-use draw we do not
-have, its rule-based controller is not specified, and its simulator version is
-not stated (from CityLearn 2.4 on, the indoor-temperature observation does not
-reflect control unless patched -- see ``stems/environment.py``).
-
-    .venv/Scripts/python -m experiments.paper_table results/paper_v1
-"""
 
 from __future__ import annotations
 
@@ -30,7 +14,6 @@ REPO = Path(__file__).resolve().parents[1]
 NORMALISED = (("cost", "Cost"), ("emission", "Emission"), ("avg_daily_peak", "Avg. daily peak"),
               ("electricity_consumption", "Consumption"), ("ramping_rate", "Ramping"))
 RAW = (("discomfort_rate", "Discomfort rate"), ("safety_violation_rate", "Safety viol. rate"))
-# Table I and Table IV of the paper, as published.
 PAPER = {"Rule-Based (paper)": (1.000, 1.000, 1.000, 1.000, 1.000, 0.130, 0.351),
          "MPC (paper)": (0.872, 0.914, 0.983, 0.975, 0.981, 0.654, 0.330),
          "Single-Agent SAC (paper)": (0.824, 0.867, 0.856, 0.813, 0.925, 0.485, 0.223),
@@ -72,7 +55,6 @@ def load(root: Path, reference: str) -> Dict[str, List[Dict[str, Any]]]:
 
 
 def interval(values: List[float]) -> str:
-    """Mean, and the 95% t-interval over seeds when there are at least three."""
     v = np.asarray(values, dtype=float)
     if len(v) < 3:
         return f"{v.mean():.3f}"

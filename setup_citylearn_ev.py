@@ -1,64 +1,4 @@
 #!/usr/bin/env python3
-"""Generate ``tx_travis_8b_ev``: the Travis 8-building schema plus EV charging.
-
-Why this exists
----------------
-No shipped CityLearn dataset contains both a full thermal building model and
-electric vehicles:
-
-===================================  =========================  ==========
-Dataset                              thermal (heat pump, DHW)   EVs
-===================================  =========================  ==========
-``tx_travis_8b`` (this project)      full                       none
-``..._2022_phase_all_plus_evs``      **none at all**            yes
-===================================  =========================  ==========
-
-The EV challenge dataset has no indoor temperature, setpoints, DHW, occupancy or
-cooling demand, so it cannot express the housing side of the problem; the Travis
-schema has no chargers, so it cannot express the vehicle side. This script merges
-them: it takes the Travis buildings unchanged and adds charger hardware, EV
-battery definitions and per-charger arrival/departure schedules, producing the
-environment the coupled housing + EV study needs.
-
-What is real and what is synthesised
-------------------------------------
-**Real, untouched:** every building's thermal model, loads, weather, pricing and
-carbon intensity. ``root_directory`` still points at the CityLearn cache and no
-building CSV is copied or modified, so the thermal side of this schema is
-byte-identical to ``tx_travis_8b``.
-
-**Synthesised:** the EV schedules. ResStock carries no vehicle data, so arrival
-and departure times, required SOC and battery sizes are generated here from a
-documented commuter model (below). They are *plausible*, not measured, and every
-result on this schema must say so. The generator is seeded and deterministic.
-
-The commuter model
-------------------
-Per vehicle and day, drawn from a fixed seed:
-
-* **Departure** ~ N(mu, sigma) with mu 07:30 on weekdays and 09:30 at weekends,
-  clipped to a sane window.
-* **Return** ~ N(mu, sigma) with mu 17:30 on weekdays and 15:30 at weekends.
-* **Stay-home probability** 12% on weekdays, 45% at weekends: the vehicle never
-  leaves and remains available all day.
-* **Required SOC at departure** ~ U(0.70, 0.90) -- what the driver expects to
-  leave with.
-* **SOC on arrival** ~ U(0.25, 0.55), lower after longer absences, so the
-  overnight charging task varies.
-
-Encoding follows ``citylearn.data.ChargerSimulation``:
-
-* state ``1`` parked, plugged in, ready -- ``departure_time`` is a **countdown in
-  timesteps**, not a clock hour, and ``required_soc_departure`` is a percentage.
-* state ``2`` incoming -- ``estimated_arrival_time`` counts down and
-  ``estimated_soc_arrival`` is a percentage.
-* state ``3`` commuting (away).
-
-Usage
------
-    .venv/Scripts/python -B setup_citylearn_ev.py            # generate
-    .venv/Scripts/python -B setup_citylearn_ev.py --validate # generate + check
-"""
 
 from __future__ import annotations
 
@@ -75,8 +15,6 @@ REPO = Path(__file__).resolve().parent
 BASE_SCHEMA = REPO / "citylearn_schemas" / "tx_travis_8b" / "schema.json"
 OUT_DIR = REPO / "citylearn_schemas" / "tx_travis_8b_ev"
 
-# Observations CityLearn expands per charger. Names are generic in the schema;
-# the charger id is appended when the environment is built.
 EV_OBSERVATIONS: List[str] = [
     "electric_vehicle_charger_connected_state",
     "connected_electric_vehicle_at_charger_battery_capacity",
@@ -98,21 +36,13 @@ CSV_COLUMNS = [
     "electric_vehicle_estimated_soc_arrival",
 ]
 
-# Realistic domestic hardware. 11 kW is a three-phase EU/Nordic wallbox, 7.4 kW
-# single-phase; both are common. Discharge power is non-zero so the schema is
-# V2G-capable even though the present study does not use it.
 CHARGER_POWERS_KW = [11.0, 7.4, 11.0, 7.4, 11.0, 7.4]
 BATTERY_CAPACITIES_KWH = [60.0, 40.0, 75.0, 52.0, 60.0, 40.0]
 
 STATE_PARKED, STATE_INCOMING, STATE_AWAY = 1, 2, 3
 
 
-# ---------------------------------------------------------------------------
-# Schedule generation
-# ---------------------------------------------------------------------------
-
 def _daily_trip(rng: np.random.Generator, weekend: bool) -> Optional[Tuple[int, int]]:
-    """Return (departure_hour, return_hour) for one day, or None if the car stays."""
     stay_home_p = 0.45 if weekend else 0.12
     if rng.random() < stay_home_p:
         return None
@@ -129,17 +59,11 @@ def _daily_trip(rng: np.random.Generator, weekend: bool) -> Optional[Tuple[int, 
 
 def generate_charger_schedule(num_steps: int, rng: np.random.Generator,
                               start_weekday: int = 0) -> List[Dict[str, object]]:
-    """Build one charger's per-timestep schedule.
-
-    Returns a list of ``num_steps`` row dicts using ``CSV_COLUMNS``. Blank fields
-    are written as empty strings, matching CityLearn's own charger CSVs, and are
-    read back as the -1 / -0.1 "not applicable" sentinels.
-    """
     rows: List[Dict[str, object]] = [
         {c: "" for c in CSV_COLUMNS} for _ in range(num_steps)
     ]
     state = np.full(num_steps, STATE_PARKED, dtype=int)
-    depart_at = np.full(num_steps, -1, dtype=int)     # step index of next departure
+    depart_at = np.full(num_steps, -1, dtype=int)
     required_soc = np.full(num_steps, np.nan)
     arrival_soc = np.full(num_steps, np.nan)
 
@@ -154,10 +78,6 @@ def generate_charger_schedule(num_steps: int, rng: np.random.Generator,
         d_step, b_step = base + depart_h, base + back_h
         if b_step >= num_steps:
             b_step = num_steps - 1
-        # The departure hour itself is still parked with a countdown of 0 -- one
-        # last chance to charge -- matching CityLearn's own charger CSVs, which
-        # run ... 2, 1, 0 before switching to state 3. Being one step early here
-        # would silently remove that final opportunity.
         state[d_step + 1:b_step] = STATE_AWAY
         state[b_step] = STATE_INCOMING
         depart_at[base:d_step + 1] = d_step
@@ -166,8 +86,6 @@ def generate_charger_schedule(num_steps: int, rng: np.random.Generator,
         arrival_soc[b_step] = float(np.clip(
             rng.uniform(0.25, 0.55) - 0.01 * (hours_away - 8), 0.10, 0.60))
 
-    # Overnight: a car parked after its return counts down to the *next* day's
-    # departure, which is what makes overnight charging a deadline problem.
     next_departure = -1
     next_required = np.nan
     for t in range(num_steps - 1, -1, -1):
@@ -178,7 +96,7 @@ def generate_charger_schedule(num_steps: int, rng: np.random.Generator,
         elif state[t] == STATE_PARKED and next_departure >= 0:
             depart_at[t], required_soc[t] = next_departure, next_required
 
-    ev_id = "Electric_Vehicle_{ev}"      # substituted by the caller
+    ev_id = "Electric_Vehicle_{ev}"
     for t in range(num_steps):
         row = rows[t]
         row["electric_vehicle_charger_state"] = int(state[t])
@@ -191,7 +109,7 @@ def generate_charger_schedule(num_steps: int, rng: np.random.Generator,
             soc = required_soc[t]
             row["electric_vehicle_required_soc_departure"] = round(
                 float(soc if np.isfinite(soc) else 0.8) * 100.0, 1)
-        else:                                     # incoming
+        else:
             row["electric_vehicle_estimated_arrival_time"] = 0.0
             soc = arrival_soc[t]
             row["electric_vehicle_estimated_soc_arrival"] = round(
@@ -209,10 +127,6 @@ def write_charger_csv(path: Path, rows: List[Dict[str, object]], ev_name: str) -
                 out["electric_vehicle_id"] = ev_name
             writer.writerow(out)
 
-
-# ---------------------------------------------------------------------------
-# Schema assembly
-# ---------------------------------------------------------------------------
 
 def build_schema(num_ev_buildings: int, seed: int, out_dir: Path) -> Dict:
     if not BASE_SCHEMA.is_file():
@@ -233,7 +147,6 @@ def build_schema(num_ev_buildings: int, seed: int, out_dir: Path) -> Dict:
     end = int(schema.get("simulation_end_time_step", 8759))
     num_steps = end - start + 1
 
-    # Activate the EV observations and the charger action.
     for name in EV_OBSERVATIONS:
         schema["observations"][name] = {"active": True}
     schema["actions"][EV_ACTION] = {"active": True}
@@ -243,8 +156,6 @@ def build_schema(num_ev_buildings: int, seed: int, out_dir: Path) -> Dict:
 
     for i, building in enumerate(included):
         if i >= num_ev_buildings:
-            # Explicitly no charger: partial EV penetration is the realistic case
-            # and gives the study buildings that can only offer flexibility.
             schema["buildings"][building].pop("chargers", None)
             continue
 
@@ -270,10 +181,6 @@ def build_schema(num_ev_buildings: int, seed: int, out_dir: Path) -> Dict:
                 },
             },
         }
-        # An absolute path: CityLearn joins this to root_directory, and
-        # os.path.join returns an absolute right-hand side unchanged. That lets
-        # the charger data live in this repo while every building CSV keeps
-        # resolving from the untouched CityLearn cache.
         schema["buildings"][building]["chargers"] = {
             charger_id: {
                 "type": "citylearn.electric_vehicle_charger.Charger",
@@ -310,12 +217,7 @@ def summarise(schema: Dict) -> None:
               f"rho={rate:.3f}/h  fill={1 / rate:4.1f} h")
 
 
-# ---------------------------------------------------------------------------
-# Validation
-# ---------------------------------------------------------------------------
-
 def validate(schema_path: Path) -> None:
-    """Load the generated schema and assert the merged environment is coherent."""
     import numpy as np
     from stems.environment import STEMSEnvironment
 
@@ -337,7 +239,6 @@ def validate(schema_path: Path) -> None:
     assert 0 < owners <= env.num_buildings
     print(f"    buildings with a charger: {owners}/{env.num_buildings}")
 
-    # Thermal side must survive untouched.
     for name in ("dhw_storage", "cooling_or_heating_device", "electrical_storage"):
         assert name in env.action_names, f"{name} lost from the merged schema"
     assert env.resolve_control_indices("thermal") is not None
@@ -350,7 +251,6 @@ def validate(schema_path: Path) -> None:
     layout = env.ev_obs_layout()[0]
     dhw_idx = env.dhw_action_index
 
-    # Drive both sides at once and confirm each moves its own store.
     connected_seen = away_seen = 0
     actions = np.zeros((env.num_buildings, env.action_dim), dtype=np.float32)
     actions[:, ev_slot] = 1.0

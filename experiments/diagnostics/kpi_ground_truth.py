@@ -1,12 +1,3 @@
-"""Do our KPIs equal the simulator's own series on this schema?
-
-The measurement was audited on the Travis houses. Before any number is reported
-on another kind of building, the same check is repeated there: cost and
-consumption computed by ``MetricsCalculator`` from observations must equal the
-values recomputed from CityLearn's own per-building series for the same hours.
-
-    .venv/Scripts/python experiments/diagnostics/kpi_ground_truth.py citylearn_schemas/cl2020_zone1/schema.json winter 7
-"""
 import os
 import sys
 from pathlib import Path
@@ -17,10 +8,10 @@ REPO = Path(__file__).resolve().parents[2]
 os.chdir(REPO)
 sys.path.insert(0, str(REPO))
 
-from experiments.controllers import ARMS, build_controller          # noqa: E402
-from experiments.runner import _window_len, evaluate, make_config   # noqa: E402
-from experiments.scenario import Scenario                           # noqa: E402
-from stems.environment import STEMSEnvironment                      # noqa: E402
+from experiments.controllers import ARMS, build_controller
+from experiments.runner import _window_len, evaluate, make_config
+from experiments.scenario import Scenario
+from stems.environment import STEMSEnvironment
 
 schema, season, days = sys.argv[1], sys.argv[2], int(sys.argv[3])
 houses = "tx_travis" in schema

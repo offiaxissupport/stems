@@ -1,5 +1,3 @@
-"""``stems.battery.BatteryModel`` against CityLearn's battery, and the barrier built on it."""
-
 from __future__ import annotations
 
 import os
@@ -19,10 +17,6 @@ SOC = 19
 WEEK = {"episode_time_steps": [(0, 167)]}
 
 
-# ---------------------------------------------------------------------------
-# The linear model (the original assumption, and the mock environment)
-# ---------------------------------------------------------------------------
-
 def test_linear_model_is_soc_plus_rate_times_action():
     m = BatteryModel.linear(np.array([0.1, 0.3]))
     np.testing.assert_allclose(m.next_soc(np.array([0.5, 0.5]), np.array([0.5, -1.0])),
@@ -39,18 +33,13 @@ def test_linear_interval_is_the_closed_form_clip():
 
 def test_out_of_reach_band_gives_the_recovery_action():
     m = BatteryModel.linear(np.array([0.1, 0.1]))
-    a_lo, a_hi = m.safe_interval(np.array([0.0, 1.0]), 0.3, 0.7)   # two steps away
+    a_lo, a_hi = m.safe_interval(np.array([0.0, 1.0]), 0.3, 0.7)
     np.testing.assert_allclose(a_lo, [1.0, -1.0])
     np.testing.assert_allclose(a_hi, [1.0, -1.0])
 
 
-# ---------------------------------------------------------------------------
-# Against the simulator
-# ---------------------------------------------------------------------------
-
 @pytest.fixture(scope="module")
 def rollout():
-    """A week of random battery actions: (soc before, executed action, model, soc after)."""
     env = STEMSEnvironment(seed=0, heat_pump=True, env_kwargs=WEEK)
     model = env.battery_model()
     e = env.electrical_storage_action_index
@@ -81,15 +70,11 @@ def test_model_is_exact_inside_the_band(rollout):
 def test_model_errs_toward_the_bound_being_protected(rollout):
     soc, action, predicted, real, floor = rollout
     discharging, charging = action < 0, action > 0
-    # Lower bound: a discharge never ends lower than predicted.
     assert (real - predicted)[discharging].min() > -1e-4
-    # Upper bound: a charge never ends higher than predicted.
     assert (predicted - real)[charging].min() > -1e-4
 
 
 def test_standing_still_at_the_lower_bound_needs_a_charge():
-    """Standby loss: holding the bound takes a positive action, which a lossless
-    model never asks for (it parked the state of charge just below the limit)."""
     env = STEMSEnvironment(seed=0, heat_pump=True, env_kwargs=WEEK)
     env.reset()
     a_lo, _ = env.battery_model().safe_interval(np.full(env.num_buildings, 0.1), 0.1, 0.9)
@@ -112,10 +97,8 @@ def test_barrier_keeps_the_band_and_uses_all_of_it():
         obs, done = out[0], out[2] or out[3]
         socs.append([o[SOC] for o in obs])
     socs = np.array(socs)
-    recovered = socs[3:]            # batteries start empty; recovery takes 1-3 steps
+    recovered = socs[3:]
     assert recovered.min() >= cfg.SOC_min and recovered.max() <= cfg.SOC_max
-    # Some batteries cannot be discharged below 1 - depth_of_discharge at all
-    # (0.15 for one Travis house): that floor, not the barrier, is their limit.
     floor = np.array([1.0 - b.electrical_storage.depth_of_discharge for b in env._env.buildings])
     reachable = np.maximum(cfg.SOC_min, floor - 0.01)
     assert np.all(recovered.min(axis=0) < reachable + 0.02), "the lower end must be usable"

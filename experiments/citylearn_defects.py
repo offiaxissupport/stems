@@ -1,27 +1,4 @@
 #!/usr/bin/env python3
-"""Reproduce three CityLearn defects on plain CityLearn (no STEMS code involved).
-
-All three entered with v2.4.0, which moved "apply the action" ahead of "advance
-the time step" in ``CityLearnEnv.step`` (v2.1-v2.3.1: next_time_step ->
-apply_actions -> update_variables; v2.4.x: apply_actions -> next_time_step ->
-update_variables; v2.5.0 / v2.6.0b1: apply_actions -> update_variables ->
-next_time_step).
-
-1. The indoor temperature observation is the dataset's uncontrolled value, not
-   the simulated one: ``LSTMDynamicsBuilding.apply_actions`` writes
-   ``indoor_dry_bulb_temperature[t]`` before the step advances, and the
-   observation is then read at ``t + 1``.
-2. The ``dhw_storage`` action is a no-op when the building has no heating storage
-   tank: ``Building.update_dhw_storage`` scales the action by
-   ``heating_storage.capacity``.
-3. At an episode's first step each thermal device's ideal load is already booked
-   (``update_variables`` at ``time_step == 0`` runs in ``reset``), and the step
-   then limits the device to ``nominal_power`` minus that load.
-
-Runs on a dataset shipped with CityLearn:
-
-    .venv/Scripts/python -m experiments.citylearn_defects
-"""
 
 from __future__ import annotations
 
@@ -39,7 +16,6 @@ def make_env(dataset: str):
 
 
 def action_vectors(env, **values: float):
-    """One action vector per building with the named actions set, others zero."""
     out = []
     for b in env.buildings:
         out.append([float(values.get(name, 0.0)) for name in b.active_actions])
@@ -111,7 +87,7 @@ def defect_first_step(dataset: str) -> None:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap = argparse.ArgumentParser(description="Reproduce three CityLearn defects on plain CityLearn")
     ap.add_argument("--dataset", default=DATASET)
     args = ap.parse_args()
     import citylearn

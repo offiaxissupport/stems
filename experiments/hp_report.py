@@ -1,12 +1,4 @@
 #!/usr/bin/env python3
-"""Table of the heat-pump-only grid: what a set-point policy saves, and at what comfort.
-
-Every number is on the patched simulator, where the indoor temperature that the
-comfort KPI and the comfort reward read is the simulated one (CityLearn >= 2.4
-reports the uncontrolled dataset value: see ``stems/environment.py``).
-
-    .venv/Scripts/python -m experiments.hp_report results/heatpump_v1
-"""
 
 from __future__ import annotations
 

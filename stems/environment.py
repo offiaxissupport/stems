@@ -1,17 +1,3 @@
-"""CityLearn environment wrapper for STEMS.
-
-Real CityLearn is the only path used for results. The wrapper is **fail-loud**:
-if CityLearn (or the requested schema) cannot be constructed it raises, rather
-than silently substituting synthetic data. A synthetic mock exists *only* for
-fast unit/smoke tests and is reachable solely via ``force_mock=True``; it prints
-a prominent banner and reports ``env_type == "mock"`` so no result is ever
-mistaken for real.
-
-The wrapper maps CityLearn's rich 45-feature observation down to the 28-feature
-STEMS subset (``OBS_NAMES``, paper Section III-A2) and exposes the per-building
-battery dynamics needed to calibrate the CBF (``battery_info``).
-"""
-
 from __future__ import annotations
 
 import sys
@@ -21,77 +7,54 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 try:
-    from citylearn.citylearn import CityLearnEnv  # type: ignore
+    from citylearn.citylearn import CityLearnEnv
     _CITYLEARN_IMPORT_ERROR: Optional[BaseException] = None
-except BaseException as exc:  # pragma: no cover - import-time environment issue
-    CityLearnEnv = None  # type: ignore
+except BaseException as exc:
+    CityLearnEnv = None
     _CITYLEARN_IMPORT_ERROR = exc
 
 
-# --------------------------------------------------------------------------
-# 28-feature STEMS observation subset (selected from CityLearn's 45 features)
-# --------------------------------------------------------------------------
 OBS_NAMES: List[str] = [
-    "day_type",                                       # 0
-    "hour",                                           # 1
-    "outdoor_dry_bulb_temperature",                   # 2
-    "outdoor_dry_bulb_temperature_predicted_1",       # 3
-    "outdoor_dry_bulb_temperature_predicted_2",       # 4
-    "outdoor_dry_bulb_temperature_predicted_3",       # 5
-    "diffuse_solar_irradiance",                       # 6
-    "diffuse_solar_irradiance_predicted_1",           # 7
-    "diffuse_solar_irradiance_predicted_2",           # 8
-    "diffuse_solar_irradiance_predicted_3",           # 9
-    "direct_solar_irradiance",                        # 10
-    "direct_solar_irradiance_predicted_1",            # 11
-    "direct_solar_irradiance_predicted_2",            # 12
-    "direct_solar_irradiance_predicted_3",            # 13
-    "carbon_intensity",                               # 14
-    "indoor_dry_bulb_temperature",                    # 15
-    "non_shiftable_load",                             # 16
-    "solar_generation",                               # 17
-    "dhw_storage_soc",                                # 18
-    "electrical_storage_soc",                         # 19
-    "net_electricity_consumption",                    # 20
-    "electricity_pricing",                            # 21
-    "electricity_pricing_predicted_1",                # 22
-    "electricity_pricing_predicted_2",                # 23
-    "cooling_demand",                                 # 24
-    "dhw_demand",                                      # 25
-    "occupant_count",                                 # 26
-    "indoor_dry_bulb_temperature_cooling_set_point",  # 27
+    "day_type",
+    "hour",
+    "outdoor_dry_bulb_temperature",
+    "outdoor_dry_bulb_temperature_predicted_1",
+    "outdoor_dry_bulb_temperature_predicted_2",
+    "outdoor_dry_bulb_temperature_predicted_3",
+    "diffuse_solar_irradiance",
+    "diffuse_solar_irradiance_predicted_1",
+    "diffuse_solar_irradiance_predicted_2",
+    "diffuse_solar_irradiance_predicted_3",
+    "direct_solar_irradiance",
+    "direct_solar_irradiance_predicted_1",
+    "direct_solar_irradiance_predicted_2",
+    "direct_solar_irradiance_predicted_3",
+    "carbon_intensity",
+    "indoor_dry_bulb_temperature",
+    "non_shiftable_load",
+    "solar_generation",
+    "dhw_storage_soc",
+    "electrical_storage_soc",
+    "net_electricity_consumption",
+    "electricity_pricing",
+    "electricity_pricing_predicted_1",
+    "electricity_pricing_predicted_2",
+    "cooling_demand",
+    "dhw_demand",
+    "occupant_count",
+    "indoor_dry_bulb_temperature_cooling_set_point",
 ]
 
-# Heat-pump extension features (appended when heat_pump=True). Both are present
-# in the real Travis schema; there is no "heating_demand" feature, so the heating
-# electrical draw is used as the heating-load signal instead.
-# Lead times of outdoor_dry_bulb_temperature_predicted_1/2/3, measured against
-# the tx_travis data files: the actuals shifted by 6, 12 and 24 hours (MAE
-# 0.15 / 0.33 / 0.69 degC), not by 1, 2 and 3.
 T_OUT_PRED_LEAD_H = (6.0, 12.0, 24.0)
 
 HEATPUMP_OBS_NAMES: List[str] = [
-    "indoor_dry_bulb_temperature_heating_set_point",  # 28
-    "heating_electricity_consumption",                # 29
+    "indoor_dry_bulb_temperature_heating_set_point",
+    "heating_electricity_consumption",
 ]
 
-OBS_DIM = len(OBS_NAMES)   # 28
-ACTION_DIM = 3             # dhw_storage, electrical_storage, cooling_or_heating_device
+OBS_DIM = len(OBS_NAMES)
+ACTION_DIM = 3
 
-# Named subsets of the action space for restricted-control studies (e.g.
-# training on the heat pump only while the battery stays frozen at no-op).
-# Resolved to indices via STEMSEnvironment.resolve_control_indices, so this
-# generalises to future actuators (e.g. an EV action) without code changes.
-# ---------------------------------------------------------------------------
-# Electric-vehicle charger slots
-# ---------------------------------------------------------------------------
-# A charger bay is described by five observations whose CityLearn names embed
-# the charger id, so they differ building to building. STEMS needs a
-# homogeneous per-building vector (the GCN stacks buildings into one matrix), so
-# bays are mapped into a fixed number of *slots* and buildings with fewer bays
-# are zero-padded. A padded slot reports ``connected_state = 0``, which the EV
-# barrier already treats as "no vehicle" -- so an absent charger and an empty bay
-# are handled by the same code path rather than by a special case.
 
 EV_SLOT_FIELDS: List[str] = [
     "connected_state",
@@ -103,12 +66,10 @@ EV_SLOT_FIELDS: List[str] = [
 
 
 def ev_slot_obs_names(slot: int) -> List[str]:
-    """Canonical STEMS observation names for EV slot ``slot``."""
     return [f"ev{slot}_{f}" for f in EV_SLOT_FIELDS]
 
 
 def ev_native_obs_names(charger_id: str) -> Dict[str, str]:
-    """CityLearn's own observation names for one charger id."""
     base = f"connected_electric_vehicle_at_charger_{charger_id}"
     return {
         "connected_state": f"electric_vehicle_charger_{charger_id}_connected_state",
@@ -123,7 +84,6 @@ EV_ACTION_PREFIX = "electric_vehicle_storage"
 
 
 def ev_slot_action_name(slot: int) -> str:
-    """Canonical STEMS action name for EV slot ``slot``."""
     return f"{EV_ACTION_PREFIX}_{slot}"
 
 
@@ -131,11 +91,6 @@ ACTION_GROUPS: Dict[str, List[str]] = {
     "dhw": ["dhw_storage"],
     "heatpump": ["cooling_or_heating_device"],
     "thermal": ["dhw_storage", "cooling_or_heating_device"],
-    # Electric vehicles. CityLearn names a charger action per bay
-    # ("electric_vehicle_storage_charger_1_1"), so the entry is matched as a
-    # *prefix* and may resolve to several indices in one building -- see
-    # ``_find_action_indices``. A schema without chargers raises rather than
-    # silently controlling nothing.
     "ev": ["electric_vehicle_storage"],
     "ev+thermal": ["dhw_storage", "cooling_or_heating_device",
                    "electric_vehicle_storage"],
@@ -145,17 +100,7 @@ ACTION_GROUPS: Dict[str, List[str]] = {
 }
 
 
-# --------------------------------------------------------------------------
-# Synthetic mock (unit/smoke tests only -- never used for reported results)
-# --------------------------------------------------------------------------
-
 class _MockBuilding:
-    """One building with simple, self-consistent physics for testing.
-
-    The mock's battery uses ``soc += elec_action * MOCK_SOC_RATE`` so the CBF,
-    calibrated from ``battery_info``, stays consistent with it.
-    """
-
     MOCK_SOC_RATE = 0.1
     _TYPE_PARAMS = {
         "residential": (10.0, 5.0, 1.5, 5.0),
@@ -183,9 +128,6 @@ class _MockBuilding:
         self._t = 0
 
     def step(self, action: np.ndarray, heat_pump: bool = False) -> np.ndarray:
-        """Advance one hour with a 3-dim action; return the 28-dim observation
-        (30-dim in heat-pump mode). Conventions follow CityLearn: ``hour`` runs
-        1..24 and the HVAC action heats when positive, cools when negative."""
         self._t += 1
         hour = (self._t - 1) % 24 + 1
         day_type = 1 + int(self._t / 24) % 7
@@ -210,8 +152,6 @@ class _MockBuilding:
         self._soc_dhw = float(np.clip(self._soc_dhw + dhw_action * 0.05, 0.05, 0.95))
         self._soc_elec = float(np.clip(self._soc_elec + elec_action * self.MOCK_SOC_RATE, 0.0, 1.0))
 
-        # Thermal model. Cooling (hvac_action < 0) removes heat; in heat-pump
-        # mode, heating (hvac_action > 0) adds heat. Passive exchange always on.
         cool_effect = 0.5 * max(0.0, -hvac_action)
         heat_effect = (0.5 * max(0.0, hvac_action)) if heat_pump else 0.0
         self._t_indoor += (0.1 * (t_out - self._t_indoor) - cool_effect + heat_effect
@@ -236,53 +176,17 @@ class _MockBuilding:
             net, price, p_pred[0], p_pred[1], cooling, dhw, occupant, t_set,
         ]
         if heat_pump:
-            # HEATPUMP_OBS_NAMES: heating set point, heating electricity.
             obs += [t_set - 2.0, 0.5 * max(0.0, hvac_action)]
         return np.array(obs, dtype=np.float32)
 
 
-# ---------------------------------------------------------------------------
-# Supervisory heat-pump control: a set-point offset tracked by an inner loop
-# ---------------------------------------------------------------------------
-# CityLearn's HVAC action is the fraction of nameplate electrical power, and its
-# LSTM temperature model responds to it almost statically and very strongly.
-# Measured step responses (Travis, 8 houses): +0.25 heating raises the indoor
-# temperature 1.5-2.5 degC in the first hour, +0.5 by 3.4-6.1 degC; -0.25 cooling
-# lowers it 2-9 degC in summer and 4-13 degC in winter (the last is outside
-# anything the model was trained on and is not physical). The plant gain is
-# therefore ~8-12 degC per unit action for heating and up to ~50 for cooling.
-#
-# A controller acting on power directly must hold a 2 degC band through that
-# gain at an hourly step: a proportional thermostat at 0.5 action/degC has a
-# loop gain of 5-25 and oscillates between heating and cooling (measured: 66%
-# discomfort at three times the energy), and an untrained policy does no better.
-#
-# In ``hvac_control="setpoint"`` the HVAC action is instead a set-point offset
-# in [-1, 1] x HVAC_OFFSET_RANGE degC, and this integral loop turns the
-# temperature error into the power command:
-#
-#     u <- clip(u + HVAC_LOOP_GAIN * e, -1, 1)
-#
-# with e the distance to the shifted comfort band (zero inside it, and inside a
-# HVAC_DEADBAND). At the typical heating gain of 10 degC/unit the loop gain is
-# 0.5 -- stable, converging in a few hours. With a zero offset it is a plain
-# thermostat: measured 2.1% winter and 5.2% summer discomfort. The offset range
-# is smaller than the 2 degC comfort tolerance, so a supervisory policy can
-# pre-heat or coast without being able to leave the band in steady state.
-
-HVAC_LOOP_GAIN = 0.05      # power-action change per degC of error per step
-HVAC_DEADBAND = 0.3        # degC
-HVAC_OFFSET_RANGE = 1.5    # degC of set-point shift at offset action = +-1
+HVAC_LOOP_GAIN = 0.05
+HVAC_DEADBAND = 0.3
+HVAC_OFFSET_RANGE = 1.5
 
 
 def thermostat_step(u: np.ndarray, t_in: np.ndarray, t_heat: np.ndarray,
                     t_cool: np.ndarray, offset: np.ndarray) -> np.ndarray:
-    """One step of the integral thermostat; returns the new power action (B,).
-
-    ``t_heat``/``t_cool`` are the heating and cooling set points of the hour
-    being decided and ``offset`` the supervisory action in [-1, 1]. Positive
-    power heats, negative cools (CityLearn's sign convention).
-    """
     shift = HVAC_OFFSET_RANGE * np.clip(offset, -1.0, 1.0)
     low, high = t_heat + shift, t_cool + shift
     error = np.where(t_in < low, low - t_in, np.where(t_in > high, high - t_in, 0.0))
@@ -290,27 +194,7 @@ def thermostat_step(u: np.ndarray, t_in: np.ndarray, t_heat: np.ndarray,
     return np.clip(u + HVAC_LOOP_GAIN * error, -1.0, 1.0).astype(np.float32)
 
 
-# ---------------------------------------------------------------------------
-# Upstream CityLearn defect: the DHW storage action is a no-op
-# ---------------------------------------------------------------------------
-# ``citylearn.building.Building.update_dhw_storage`` (2.6.0b1, building.py:1562)
-# scales the requested energy by ``heating_storage.capacity`` instead of
-# ``dhw_storage.capacity``:
-#
-#     energy = action * self.heating_storage.capacity * ratio
-#
-# This schema has no heating storage tank, so ``heating_storage.capacity`` is
-# 0.0 and *every* dhw_storage action resolves to zero energy -- the hot-water
-# actuator silently does nothing. Verified directly: charging at action=0.8 for
-# eight consecutive steps leaves ``dhw_storage_soc`` at exactly 0.0.
-#
-# The patch below is the one-word correction. It is applied loudly (banner +
-# metadata stamp) and can be disabled with ``patch_dhw=False``, consistent with
-# this project's no-silent-fallbacks rule: a simulator correction must be
-# visible in the run record, never assumed.
-
 def _patched_update_dhw_storage(self, action: float) -> None:
-    """``Building.update_dhw_storage`` with ``dhw_storage.capacity`` (see above)."""
     from citylearn.energy_model import HeatPump
 
     energy = (action * self.dhw_storage.capacity
@@ -339,63 +223,6 @@ def _patched_update_dhw_storage(self, action: float) -> None:
     self.dhw_device.update_electricity_consumption(electricity_consumption)
 
 
-# ---------------------------------------------------------------------------
-# Upstream CityLearn defect: thermal-device load counted twice at episode start
-# ---------------------------------------------------------------------------
-# At ``reset()``, ``Building.update_variables`` (2.6.0b1, building.py:2432) runs
-# its ``time_step == 0`` branch and *sets* each thermal device's t=0
-# electricity consumption from the uncontrolled (ideal) load. The first
-# ``step()`` then runs ``update_energy_from_heating_device`` (building.py:1491),
-# which checks the demand against
-#
-#     max_output = cop * (nominal_power - electricity_consumption[0])
-#
-# -- headroom that already has the same load subtracted -- before *adding* the
-# controlled consumption on top. Any building whose episode-start heating need
-# exceeds half its nameplate fails CityLearn's own demand assertion whatever the
-# action. Measured on Travis building 120912, winter, t=0: need 3.84 kWe against
-# a 4.96 kW heat pump, booked headroom 1.12 kW, demand 6.61 kW > output 1.93 kW.
-# CityLearn fixed exactly this double count for the battery (the NOTE at
-# building.py:2464) but not for the cooling, heating and DHW devices.
-#
-# The same shrunken headroom also *silently clips* storage charging on that
-# first step, where CityLearn caps instead of asserting. Measured on building
-# 400973 (Travis, winter): a DHW charge command of 0.87 drew 6.42 instead of the
-# heater's full 6.76 kWe -- short by exactly the booked load. The tank state
-# reconverged by t=2 and the 3-day episode's energy moved by 0.002%. The final
-# t=0 accounting is otherwise correct: after ``apply_actions`` the same
-# ``time_step == 0`` branch runs again and *overwrites* the booked value with the
-# controlled one.
-#
-# The patch clears the reset-time booking immediately before the first step.
-# Applied loudly, disable with ``patch_t0_double_count=False``.
-
-# ---------------------------------------------------------------------------
-# Upstream CityLearn defect: the indoor temperature observation ignores control
-# ---------------------------------------------------------------------------
-# ``LSTMDynamicsBuilding.apply_actions`` (2.6.0b1, building.py:2763) simulates the
-# indoor temperature and writes it to ``indoor_dry_bulb_temperature[t]`` *before*
-# the time step advances. The observation is then read at ``t + 1``
-# (internal/building_ops.py, ``series[t]`` after advancing), which still holds the
-# dataset's uncontrolled value. The source comment at building.py:2860 ("called
-# after advancing to next timestep") describes an order the refactor no longer
-# has. Measured over 216 controlled building-steps in winter: the observed
-# temperature equals the uncontrolled ``indoor_dry_bulb_temperature_without_control
-# [t+1]`` every time and the simulated one never; full heating drove the
-# simulated house to 34 degC and full cooling to -15 degC while the controller
-# observed 17-23 degC either way. A controller, its comfort reward and any
-# comfort metric reading the observation are blind to their own HVAC actions.
-#
-# Separately, on an episode's final transition CityLearn applies the action but
-# does not advance the buildings (internal/runtime.py:204), so every state
-# observation repeats the previous hour.
-#
-# The correction reads each state observation for the hour the action was
-# applied to straight from the simulator's own series. Elsewhere the values are
-# identical to what CityLearn returns; exogenous observations (weather, price,
-# set points, occupancy) are untouched and keep describing the hour about to be
-# decided. Applied loudly, disable with ``patch_endogenous_obs=False``.
-
 ENDOGENOUS_OBS = {
     "indoor_dry_bulb_temperature": lambda b: b.energy_simulation.indoor_dry_bulb_temperature,
     "net_electricity_consumption": lambda b: b.net_electricity_consumption,
@@ -406,7 +233,6 @@ ENDOGENOUS_OBS = {
 
 
 def _wrap_apply_actions_t0(building) -> None:
-    """Clear reset-booked thermal-device consumption before an episode's first step."""
     original = building.apply_actions
 
     def apply_actions(**kwargs):
@@ -421,8 +247,6 @@ def _wrap_apply_actions_t0(building) -> None:
 
 
 class _MockCityLearnEnv:
-    """Minimal mock of CityLearnEnv (8 buildings, full-year episodes)."""
-
     NUM_BUILDINGS = 8
     EPISODE_LEN = 8760
 
@@ -473,34 +297,13 @@ class _MockCityLearnEnv:
         for i in range(self.NUM_BUILDINGS):
             b = type("_B", (), {})()
             b.name = f"Building_{i+1}"
-            # Mock battery consistent with _MockBuilding.MOCK_SOC_RATE = 0.1:
-            # nominal_power/capacity = 0.1 -> e.g. 1.0 / 10.0.
             b.electrical_storage = type("_E", (), {
                 "capacity": 10.0, "nominal_power": 1.0, "efficiency": 1.0})()
             out.append(b)
         return out
 
 
-# --------------------------------------------------------------------------
-# STEMSEnvironment
-# --------------------------------------------------------------------------
-
 class STEMSEnvironment:
-    """Wraps real CityLearn (default) or, only on explicit request, the mock.
-
-    Parameters
-    ----------
-    schema : str | None
-        Path to a CityLearn schema JSON (defaults to the Travis 8-building one).
-    seed : int
-        Seed (used by the mock; CityLearn seeding is in the schema).
-    force_mock : bool
-        Use the synthetic mock instead of real CityLearn. Prints a loud banner;
-        results from this mode must never be reported as real.
-    heat_pump : bool
-        Enable bidirectional heat-pump physics/observations (Phase 3).
-    """
-
     SCHEMA = "citylearn_schemas/tx_travis_8b/schema.json"
     _BANNER = ("\n" + "*" * 64 +
                "\n***  SYNTHETIC MOCK ENVIRONMENT -- NOT FOR REPORTED RESULTS  ***\n" +
@@ -536,9 +339,6 @@ class STEMSEnvironment:
         self._allow_missing_obs = bool(allow_missing_obs)
         self._absent_obs: List[str] = []
         self._patches: List[str] = []
-        # Overrides handed straight to CityLearnEnv, recorded in run metadata.
-        # Select a period with ``episode_time_steps=[(start, end)]``; the guard
-        # below explains why the simulation itself must not be shortened.
         self._env_kwargs: Dict[str, Any] = dict(env_kwargs or {})
         resizing = sorted(k for k in ("simulation_start_time_step", "simulation_end_time_step")
                           if k in self._env_kwargs)
@@ -564,9 +364,6 @@ class STEMSEnvironment:
 
         self._configure_dims_and_indices()
 
-    # ------------------------------------------------------------------
-    # Construction helpers (fail loud)
-    # ------------------------------------------------------------------
 
     def _build_real_env(self, requested_schema: str):
         if CityLearnEnv is None:
@@ -588,14 +385,6 @@ class STEMSEnvironment:
 
     @staticmethod
     def _resolve_schema(schema: str) -> str:
-        """Resolve a schema path, or the name of a bundled CityLearn dataset.
-
-        A bare name such as ``citylearn_challenge_2022_phase_all_plus_evs`` is
-        handed to CityLearn unchanged, which downloads and caches it. That makes
-        the published EV and cold-climate datasets usable without copying them
-        into the repository, while a local path still wins so the project's own
-        generated schemas are never shadowed by a same-named dataset.
-        """
         p = Path(schema)
         if p.is_file():
             return str(p)
@@ -615,22 +404,6 @@ class STEMSEnvironment:
         )
 
     def _configure_dims_and_indices(self) -> None:
-        """Build a homogeneous STEMS view over possibly heterogeneous buildings.
-
-        CityLearn buildings need not agree: in the EV challenge datasets the
-        per-building action space has 1-3 entries and the observation vector
-        28-42, because only some buildings own a charger and charger ids are
-        baked into observation names. STEMS needs one shape for all buildings --
-        the GCN stacks them into a single matrix and every actor is built to the
-        same signature -- so this method constructs a *canonical* padded layout
-        plus a per-building map into each building's own native indices.
-
-        Devices a building does not have are simply absent from its map: their
-        canonical observations read zero and their canonical actions are dropped
-        before the vector reaches CityLearn. For a homogeneous schema such as
-        ``tx_travis_8b`` every map is the identity and this reduces exactly to
-        the previous behaviour.
-        """
         self._num_buildings = len(self._env.observation_names)
         B = self._num_buildings
         raw_obs_names = [list(n) for n in self._env.observation_names]
@@ -642,7 +415,6 @@ class STEMSEnvironment:
                               for sp in self._env.action_space]
         self._native_action_names = native_actions
 
-        # -- charger discovery, per building -----------------------------
         self._charger_ids: List[List[str]] = []
         marker, suffix = "electric_vehicle_charger_", "_connected_state"
         for names in raw_obs_names:
@@ -656,7 +428,6 @@ class STEMSEnvironment:
                 f"Schema exposes {found} chargers on some building but "
                 f"max_ev_slots={self._ev_slots}; raise it or bays would be dropped.")
 
-        # -- canonical observation layout --------------------------------
         obs_names = list(OBS_NAMES)
         if self._heat_pump:
             obs_names = obs_names + list(HEATPUMP_OBS_NAMES)
@@ -678,11 +449,8 @@ class STEMSEnvironment:
                 else:
                     row += [None] * len(EV_SLOT_FIELDS)
             self._obs_indices_per_building.append(row)
-        # Kept for backward compatibility: the first building's map.
         self._obs_indices = self._obs_indices_per_building[0]
 
-        # A base feature absent from *every* building is a schema mismatch, not
-        # padding. Fail loud unless explicitly allowed, and record it either way.
         absent = [n for j, n in enumerate(obs_names[:base_count])
                   if all(row[j] is None for row in self._obs_indices_per_building)]
         self._absent_obs = absent
@@ -701,7 +469,6 @@ class STEMSEnvironment:
                   "for this run.")
             print("=" * 74)
 
-        # -- canonical action layout -------------------------------------
         canonical: List[str] = []
         for name in ("dhw_storage", "electrical_storage", "cooling_or_heating_device"):
             if any(name in names for names in native_actions):
@@ -742,24 +509,16 @@ class STEMSEnvironment:
 
     @property
     def ev_slots(self) -> int:
-        """Number of EV charger slots in the canonical layout (0 when none)."""
         return self._ev_slots
 
     @property
     def absent_observations(self) -> List[str]:
-        """STEMS base features this schema does not provide (zero-filled)."""
         return list(self._absent_obs)
 
     def building_has_action(self, building: int, slot: int) -> bool:
-        """Whether ``building`` physically owns the device at canonical ``slot``."""
         return slot in self._action_slot_to_native[building]
 
     def action_presence_mask(self) -> np.ndarray:
-        """(B, action_dim) mask: 1 where the building owns that actuator.
-
-        A padded slot is not merely unused -- commanding it is meaningless, so
-        the agent's output there is discarded rather than passed on.
-        """
         mask = np.zeros((self._num_buildings, self._action_dim), dtype=np.float32)
         for b, mapping in enumerate(self._action_slot_to_native):
             for slot in mapping:
@@ -776,14 +535,6 @@ class STEMSEnvironment:
                 f"Action {name!r} not found in action space {self._action_names}.")
 
     def _find_action_indices(self, name: str) -> List[int]:
-        """Resolve an action name to every index it matches, in order.
-
-        An exact match wins. Failing that the name is treated as a prefix, which
-        is what per-bay device naming requires: CityLearn calls a charger action
-        ``electric_vehicle_storage_charger_1_1``, and a building may have several.
-        Raises when nothing matches, so asking to control a device the schema
-        does not have fails loudly instead of yielding an empty control set.
-        """
         if name in self._action_names:
             return [self._action_names.index(name)]
         matches = [i for i, n in enumerate(self._action_names)
@@ -794,20 +545,8 @@ class STEMSEnvironment:
                 f"{self._action_names}. This schema does not expose that device.")
         return matches
 
-    # ------------------------------------------------------------------
-    # Battery dynamics (calibrates the CBF -- the key fix vs the old code)
-    # ------------------------------------------------------------------
 
     def _extract_battery_info(self) -> Dict[str, np.ndarray]:
-        """Per-building battery parameters and the SOC change per unit action.
-
-        CityLearn's battery moves SOC by ~ action * nominal_power / capacity per
-        hour (verified empirically to 3 dp). We expose ``soc_rate = nominal_power
-        / capacity`` -- a slight over-estimate of the true (efficiency-scaled)
-        delta, which makes the CBF marginally conservative (safe) rather than
-        optimistic (the old hard-coded 0.1 under-estimated it 2-5x and was the
-        main cause of SOC violations).
-        """
         B = self._num_buildings
         cap = np.ones(B, dtype=np.float32)
         nom = np.full(B, 0.1, dtype=np.float32)
@@ -825,16 +564,9 @@ class STEMSEnvironment:
                 "nominal_power": nom, "efficiency": eff}
 
     def battery_info(self) -> Dict[str, np.ndarray]:
-        """Return per-building battery dynamics (soc_rate, capacity, ...)."""
         return {k: v.copy() for k, v in self._battery_info.items()}
 
     def battery_model(self):
-        """The batteries' one-step dynamics for the safety barrier.
-
-        On real CityLearn this is the simulator's own model, built from each
-        battery's curves and losses (``stems.battery.BatteryModel``); on the mock
-        it is the mock's linear rule.
-        """
         from stems.battery import BatteryModel
 
         if self._mock:
@@ -843,8 +575,6 @@ class STEMSEnvironment:
             self._env.buildings, float(self._env.seconds_per_time_step))
 
     def dhw_tank_model(self):
-        """The hot-water tanks and their heaters as a one-step model
-        (``stems.battery.TankModel``): what a storage action draws this hour."""
         from stems.battery import TankModel
 
         if self._mock:
@@ -852,16 +582,8 @@ class STEMSEnvironment:
         return TankModel.from_citylearn(self._env.buildings,
                                         float(self._env.seconds_per_time_step))
 
-    # ------------------------------------------------------------------
-    # Simulator corrections (applied loudly, recorded in metadata)
-    # ------------------------------------------------------------------
 
     def _apply_citylearn_patches(self) -> None:
-        """Correct upstream CityLearn defects (see the module-level notes).
-
-        Every patched run announces itself and stamps ``citylearn_patches`` into
-        the run metadata.
-        """
         if self._mock:
             return
         self._patch_dhw_storage()
@@ -869,7 +591,6 @@ class STEMSEnvironment:
         self._announce_endogenous_obs()
 
     def _patch_t0_thermal_double_count(self) -> None:
-        """Stop the first step of an episode checking demand against booked load."""
         if not self._patch_t0:
             return
         for b in self._env.buildings:
@@ -885,7 +606,6 @@ class STEMSEnvironment:
         print("=" * 74)
 
     def _announce_endogenous_obs(self) -> None:
-        """Record the state-observation correction (applied in ``step``)."""
         if not self._patch_endogenous:
             return
         self._patches.append("endogenous_obs_from_simulated_hour")
@@ -898,10 +618,6 @@ class STEMSEnvironment:
         print("=" * 74)
 
     def _patch_dhw_storage(self) -> None:
-        """Correct the no-op DHW storage action where the defect is present.
-
-        Only applied to a building that has a DHW tank but no heating storage tank.
-        """
         if not self._patch_dhw or self._dhw_action_index < 0:
             return
         import types
@@ -927,20 +643,14 @@ class STEMSEnvironment:
 
     @property
     def citylearn_patches(self) -> List[str]:
-        """Simulator corrections active in this run (stamped into metadata)."""
         return list(self._patches)
 
     @property
     def env_kwargs(self) -> Dict[str, Any]:
-        """CityLearnEnv overrides for this run (building subset, time window)."""
         return dict(self._env_kwargs)
 
-    # ------------------------------------------------------------------
-    # DHW tank + heat-pump parameters (calibrate the thermal study)
-    # ------------------------------------------------------------------
 
     def _action_bounds(self) -> np.ndarray:
-        """Per-building upper bound on each action, from the live action space."""
         B, A = self._num_buildings, self._action_dim
         highs = np.ones((B, A), dtype=np.float32)
         try:
@@ -951,13 +661,6 @@ class STEMSEnvironment:
         return highs
 
     def _extract_dhw_info(self) -> Dict[str, np.ndarray]:
-        """Per-building DHW tank + heater parameters.
-
-        CityLearn charges the tank by ``energy = action * capacity`` capped at the
-        heater's hourly output, so the SOC gain per step is bounded by
-        ``min(action_bound, P_nom * eta / C)`` -- the finite time-to-heat that
-        motivates anticipatory pre-heating (see ``stems.thermal``).
-        """
         B = self._num_buildings
         cap = np.ones(B, dtype=np.float32)
         nom = np.full(B, 1.0, dtype=np.float32)
@@ -986,11 +689,6 @@ class STEMSEnvironment:
                 "loss_coefficient": loss, "action_bound": action_bound}
 
     def _extract_heat_pump_info(self) -> Dict[str, np.ndarray]:
-        """Per-building heat-pump efficiencies, supply temperatures and ratings.
-
-        These feed the Carnot CoP model (``stems.thermal.CoPModel``), matching
-        ``citylearn.energy_model.HeatPump.get_cop``.
-        """
         B = self._num_buildings
         out = {k: np.zeros(B, dtype=np.float32) for k in
                ("efficiency_heat", "target_heat", "nominal_power_heat",
@@ -1017,17 +715,10 @@ class STEMSEnvironment:
         return out
 
     def ev_action_indices(self) -> List[int]:
-        """Canonical action indices of the EV slots, or [] when there are none."""
         return [i for i, n in enumerate(self._action_names)
                 if n.startswith(EV_ACTION_PREFIX)]
 
     def ev_obs_layout(self) -> List[Dict[str, int]]:
-        """Canonical observation indices for each EV slot.
-
-        Indices are positions in the STEMS observation vector, identical for
-        every building by construction, so one layout drives all of them. An
-        empty list means the schema has no chargers.
-        """
         index = {n: i for i, n in enumerate(self._selected_obs_names)}
         layouts = []
         for slot in range(self._ev_slots):
@@ -1039,13 +730,6 @@ class STEMSEnvironment:
         return layouts
 
     def ev_info(self) -> Dict[str, np.ndarray]:
-        """Per-(building, slot) charger limits read from the live ``Charger``s.
-
-        Mirrors ``battery_info`` / ``dhw_info``: the charge rate that calibrates
-        the EV deadline barrier comes from the plant, never assumed. Buildings
-        without a charger in a slot report zero power, which makes the slot
-        inert rather than silently fast.
-        """
         B, K = self._num_buildings, self._ev_slots
         power = np.zeros((B, K), dtype=np.float32)
         eff = np.ones((B, K), dtype=np.float32)
@@ -1063,8 +747,6 @@ class STEMSEnvironment:
                 "charger_ids": self._charger_ids}
 
     def ev_fleet_model(self, slot: int = 0):
-        """The chargers' and vehicles' one-step dynamics (``stems.fleet.EVFleetModel``),
-        built from the live simulator."""
         from stems.fleet import EVFleetModel
 
         if self._mock or self._ev_slots == 0:
@@ -1073,25 +755,13 @@ class STEMSEnvironment:
 
     @property
     def ev_draw_kwh(self) -> np.ndarray:
-        """(B,) grid-side energy each building's chargers took in the last step,
-        from the simulator's own series."""
         return self._ev_draw_kwh.copy()
 
     @property
     def ev_departures(self) -> List[Dict[str, float]]:
-        """Vehicles that left at the end of the last step.
-
-        Each entry: ``building``, ``soc`` (the state of charge it left with,
-        after that hour's charging), ``required_soc`` and ``capacity_kwh``. The
-        charge delivered in a vehicle's last connected hour never appears in an
-        observation -- the next one already shows an empty bay -- so a departure
-        scored from observations ignores that hour; this is the simulator's own
-        record of it.
-        """
         return [dict(d) for d in self._ev_departures]
 
     def _record_ev_step(self, t: int) -> None:
-        """Read charger draw and departures for hour ``t`` from the simulator."""
         self._ev_draw_kwh = np.zeros(self._num_buildings, dtype=np.float32)
         self._ev_departures = []
         if self._mock or self._ev_slots == 0:
@@ -1111,16 +781,11 @@ class STEMSEnvironment:
                     "capacity_kwh": float(ev.battery.capacity)})
 
     def dhw_info(self) -> Dict[str, np.ndarray]:
-        """Return per-building DHW tank/heater parameters."""
         return {k: v.copy() for k, v in self._dhw_info.items()}
 
     def heat_pump_info(self) -> Dict[str, np.ndarray]:
-        """Return per-building heat-pump CoP parameters."""
         return {k: v.copy() for k, v in self._heat_pump_info.items()}
 
-    # ------------------------------------------------------------------
-    # Properties
-    # ------------------------------------------------------------------
 
     @property
     def num_buildings(self) -> int:
@@ -1163,13 +828,6 @@ class STEMSEnvironment:
         return self._dhw_action_index
 
     def resolve_control_indices(self, isolate: str) -> Optional[List[int]]:
-        """Map an isolation mode name (``ACTION_GROUPS`` key) to action indices.
-
-        Returns ``None`` for ``"none"`` (full control, the default). Used to
-        restrict ``STEMSAgent`` to a device subset (e.g. heat-pump-only
-        studies) while keeping the rest of the pipeline (CBF, reward, env)
-        untouched -- non-controlled actuators are simply held at no-op.
-        """
         if isolate == "none":
             return None
         try:
@@ -1187,14 +845,9 @@ class STEMSEnvironment:
 
     @property
     def heating_setpoint_idx(self) -> Optional[int]:
-        """Index of the heating setpoint in the observation vector (heat-pump
-        mode only); None when heating observations are not active."""
         name = "indoor_dry_bulb_temperature_heating_set_point"
         return self._selected_obs_names.index(name) if name in self._selected_obs_names else None
 
-    # ------------------------------------------------------------------
-    # Perturbations (extreme-weather / comm-disruption experiments)
-    # ------------------------------------------------------------------
 
     def set_comm_disruption(self, dropout_prob: float) -> None:
         self._comm_dropout = float(np.clip(dropout_prob, 0.0, 1.0))
@@ -1205,28 +858,8 @@ class STEMSEnvironment:
             self._env.set_temp_offset(offset)
 
     def set_weather_front(self, gradient: float) -> None:
-        """Perturb the outdoor-temperature *forecast* by ``gradient`` degC per hour.
-
-        ``set_temp_offset`` shifts the current temperature and all three of its
-        forecasts by the same amount, so it changes the temperature *level* but
-        leaves the forecast *gradient* untouched. Any mechanism keyed on an
-        approaching change -- such as the cold-front term of
-        ``CoPModel.cop_drop`` -- is therefore invisible to it by construction.
-
-        This applies an additive ramp ``gradient * lead`` to each prediction,
-        where ``lead`` is its lead time in hours (``T_OUT_PRED_LEAD_H``: 6, 12,
-        24), leaving the current reading alone, so a
-        negative gradient presents the controller with "it is about to get
-        colder". Like ``set_temp_offset`` this perturbs the observation stream,
-        not CityLearn's internal physics: it probes whether the anticipation
-        logic responds to a weather signal, and is not a claim about true energy
-        use in a real cold snap.
-        """
         self._temp_gradient = float(gradient)
 
-    # ------------------------------------------------------------------
-    # Core API (gymnasium-style: reset->(obs,info), step->(o,r,term,trunc,info))
-    # ------------------------------------------------------------------
 
     def reset(self) -> Tuple[List[np.ndarray], Dict]:
         result = self._env.reset()
@@ -1272,19 +905,8 @@ class STEMSEnvironment:
                     obs_list[i] = np.zeros_like(obs_list[i])
         return obs_list, rewards, bool(terminated), bool(truncated), info
 
-    # ------------------------------------------------------------------
-    # Private helpers
-    # ------------------------------------------------------------------
 
     def _record_executed(self, actions: np.ndarray, native: List[np.ndarray]) -> None:
-        """Keep what was actually sent to the simulator, in the canonical layout.
-
-        This differs from the caller's action in two ways: in set-point mode the
-        HVAC column holds the inner loop's power command, and every column has
-        been clipped to the device's own action bounds (CityLearn caps a storage
-        action at nominal power / capacity, e.g. 0.54-0.87 for the hot-water
-        tanks). KPIs and actuator checks about *devices* must read this.
-        """
         executed = np.asarray(actions, dtype=np.float32).copy()
         if not self._mock:
             for i in range(self._num_buildings):
@@ -1295,31 +917,22 @@ class STEMSEnvironment:
 
     @property
     def executed_actions(self) -> np.ndarray:
-        """(B, action_dim) device commands of the last step (see ``_record_executed``)."""
         return self._executed_actions.copy()
 
     @property
     def hvac_control(self) -> str:
-        """'power' (action = power fraction) or 'setpoint' (action = set-point offset)."""
         return self._hvac_control
 
     def _read_simulated_hour(self, obs_list: List[np.ndarray], t: int) -> None:
-        """Overwrite the state observations with the simulator's values for hour ``t``.
-
-        See the note on ``ENDOGENOUS_OBS``. ``t`` is the hour the action was
-        applied to; every value written here is the one CityLearn itself stores
-        for that hour.
-        """
         for b, building in enumerate(self._env.buildings):
             for j, name in enumerate(self._selected_obs_names):
                 if name not in ENDOGENOUS_OBS:
                     continue
                 if self._obs_indices_per_building[b][j] is None:
-                    continue          # the building lacks this device: padded slot
+                    continue
                 obs_list[b][j] = float(np.asarray(ENDOGENOUS_OBS[name](building))[t])
 
     def _extract_obs(self, raw_obs_list: List[np.ndarray]) -> List[np.ndarray]:
-        """Select the STEMS feature subset from raw CityLearn observations."""
         if self._mock:
             result = [o.astype(np.float32) for o in raw_obs_list]
         else:
@@ -1335,19 +948,12 @@ class STEMSEnvironment:
                 for idx in (2, 3, 4, 5):
                     obs[idx] += self._temp_offset
         if getattr(self, "_temp_gradient", 0.0) != 0.0:
-            # Forecast-only ramp: index 2 is "now", 3/4/5 lead by 6/12/24 hours.
             for obs in result:
                 for idx, lead in zip((3, 4, 5), T_OUT_PRED_LEAD_H):
                     obs[idx] += self._temp_gradient * lead
         return result
 
     def _remap_actions(self, actions: np.ndarray) -> List[np.ndarray]:
-        """Canonical actions -> each building's own native action vector.
-
-        Slots for devices a building does not own are dropped rather than passed
-        as zeros: CityLearn sizes the action array to the devices that exist, so
-        a padded slot has no place to go.
-        """
         if self._mock:
             return [actions[i] for i in range(self._num_buildings)]
         out: List[np.ndarray] = []
@@ -1367,12 +973,8 @@ class STEMSEnvironment:
             out.append(native)
         return out
 
-    # ------------------------------------------------------------------
-    # Building metadata for the similarity graph (Eq. 10-11)
-    # ------------------------------------------------------------------
 
     def get_building_info(self) -> Dict[str, Any]:
-        """Return {'positions', 'features'} for BuildingGraph construction."""
         B = self._num_buildings
         if not self._mock:
             try:
@@ -1395,7 +997,6 @@ class STEMSEnvironment:
                 raise RuntimeError(
                     f"Could not read CityLearn building metadata for the graph: {exc!r}"
                 ) from exc
-        # Mock layout (Travis-inspired): 5 residential, 2 commercial, 1 mixed.
         positions = np.array([[30.260, -97.740], [30.262, -97.738], [30.264, -97.742],
                               [30.258, -97.736], [30.266, -97.744], [30.275, -97.720],
                               [30.278, -97.718], [30.268, -97.730]], dtype=np.float32)[:B]

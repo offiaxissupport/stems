@@ -1,30 +1,3 @@
-"""One run = one (scenario, arm, seed): train if the arm learns, then evaluate.
-
-Each run writes one JSON record:
-
-``meta``
-    Scenario (buildings, windows, caps), arm, seed, git state, calibration read
-    from the simulator, and the full safety / thermal / training configuration.
-``train``
-    Per-episode learning curve (learning arms only).
-``eval``
-    Every KPI from ``MetricsCalculator`` on the held-out evaluation window.
-``actuators``
-    Evidence, taken from the evaluation rollout itself, that each controlled
-    actuator responded to its commands. A run whose actuators did not respond is
-    not a valid result -- the failure the hot-water correction exposed -- and the
-    aggregation step excludes it.
-
-A failure inside a run is recorded (status ``error`` with its traceback) instead
-of raised, so one broken configuration does not stop a grid.
-
-Learning arms train on the scenario's training window, save the model, then
-evaluate a freshly built controller on the evaluation window with the saved
-weights loaded. Both windows are episodes of the same full-year simulation, so
-device sizes are identical by construction; the record stores the calibration
-read from each environment so that this is checked rather than assumed.
-"""
-
 from __future__ import annotations
 
 import json
@@ -62,13 +35,10 @@ def git_state() -> str:
         return "unknown"
 
 
-# Code whose behaviour a run depends on. "git describe --dirty" cannot tell two
-# dirty working trees apart, so the record also carries a hash of these files.
 FINGERPRINTED = ("stems/*.py", "experiments/*.py")
 
 
 def code_fingerprint() -> Dict[str, Any]:
-    """Git state plus a SHA-256 over the source that produced the run."""
     import hashlib
 
     h = hashlib.sha256()
@@ -86,8 +56,6 @@ def code_fingerprint() -> Dict[str, Any]:
 
 
 def make_config(scenario, learner: Optional[Dict[str, Any]] = None):
-    """Configuration of one run: the scenario's caps plus the learner settings
-    (``share_parameters``) that the grid driver fixes for every learning arm."""
     from stems.config import CBFConfig, STEMSConfig
 
     config = STEMSConfig()
@@ -99,19 +67,7 @@ def make_config(scenario, learner: Optional[Dict[str, Any]] = None):
 
 
 class ActuatorEvidence:
-    """Did each controlled actuator respond to its commands during evaluation?
-
-    Storage (battery, hot-water tank): the mean state-of-charge change on steps
-    commanded to charge must exceed the mean on steps not commanded to charge.
-    Heat pump: its electricity use must correlate with the magnitude of the HVAC
-    command, checked at lag 0 and 1 to be robust to how the simulator indexes its
-    consumption arrays. Too few commands of a kind returns ``None`` (insufficient
-    evidence), never a silent pass.
-    """
-
     CHARGE, IDLE, MIN_N, MIN_CONTRAST, MIN_CORR, MIN_HVAC_STD = 0.2, 0.05, 20, 0.01, 0.3, 0.02
-    # A charge command on a full store cannot move it; such steps are not evidence
-    # either way (an unshielded policy pinned at the top would otherwise "fail").
     HEADROOM = 0.95
 
     def __init__(self, env) -> None:
@@ -145,13 +101,6 @@ class ActuatorEvidence:
         return out
 
     def _hvac(self) -> Optional[Dict[str, Any]]:
-        """Each HVAC mode is checked against its own device.
-
-        CityLearn splits the action by sign (``a_heat = max(a, 0)``,
-        ``a_cool = |min(a, 0)|``) onto two devices with different nameplates and
-        CoPs, so heating commands are correlated with heating consumption and
-        cooling commands with cooling consumption, never pooled.
-        """
         j = self.idx["hvac"]
         if j is None or j < 0 or not self.actions or getattr(self.env, "using_mock", False):
             return None
@@ -209,7 +158,6 @@ class ActuatorEvidence:
 
 def train(agent, env, config, episodes: int, log: Callable[[str], None],
           max_steps: int) -> List[Dict[str, Any]]:
-    """Train ``agent`` for ``episodes`` episodes of the environment's window."""
     from stems.reward import STEMSReward
     from stems.utils import EpisodeBuffer, HistoryBuffer
 
@@ -222,9 +170,6 @@ def train(agent, env, config, episodes: int, log: Callable[[str], None],
     hist = HistoryBuffer(B, env.obs_dim, config.transformer.window_size)
     curve: List[Dict[str, Any]] = []
     fleet_shield = getattr(agent, "fleet_shield", None)
-    # A constraint on a device the policy does not drive (the battery in a
-    # heat-pump-only study) is a constant cost: it would only saturate its
-    # multiplier and scale every reward advantage down by 1 / (1 + lambda).
     battery_controlled = agent.elec_idx in agent.control_indices
 
     for ep in range(1, episodes + 1):
@@ -263,7 +208,7 @@ def train(agent, env, config, episodes: int, log: Callable[[str], None],
             net = np.array([o[_IDX_NET] for o in nxt], dtype=np.float32)
             c_soc = ((soc < cbf.SOC_min) | (soc > cbf.SOC_max)).astype(np.float32)
             if not battery_controlled:
-                c_soc[:] = 0.0      # not the policy's device: no action of its can change it
+                c_soc[:] = 0.0
             c_pow = (np.abs(net) > cbf.P_building_max).astype(np.float32)
             grid = float(np.maximum(net, 0.0).sum() > cbf.P_grid_max)
             costs = np.stack([c_soc, c_pow, np.full(B, grid, dtype=np.float32)], axis=-1)
@@ -296,16 +241,10 @@ def train(agent, env, config, episodes: int, log: Callable[[str], None],
 
 
 def evaluate(controller, env, config, max_steps: int) -> Dict[str, Any]:
-    """Deterministic rollout over the environment's window, with every KPI."""
     from stems.metrics import MetricsCalculator
     from stems.utils import HistoryBuffer
 
     B = env.num_buildings
-    # Hot-water "readiness" is not scored: in CityLearn the heater serves every
-    # hot-water draw directly, so an empty tank costs nothing and the KPI would
-    # only measure agreement with the rule that defines it.
-    # The battery band is scored only where the battery is the controller's to
-    # drive (in a heat-pump-only arm it stands idle by construction).
     controlled = getattr(controller, "control_indices", None)
     count_soc = controlled is None or env.electrical_storage_action_index in controlled
     metrics = MetricsCalculator(B, config.cbf, soc_rate=env.battery_info()["soc_rate"],
@@ -320,8 +259,6 @@ def evaluate(controller, env, config, max_steps: int) -> Dict[str, Any]:
     n, done = 0, False
     while not done:
         actions = controller.select_action(obs, hist.get(), explore=False)
-        # What the controller asked for before its shield (in residual mode: the
-        # rule plus the learned correction), for the intervention KPIs.
         raw = getattr(controller, "_last_nominal_actions",
                       getattr(controller, "_last_raw_actions", None))
         nxt, _, term, trunc, _ = env.step(actions)
@@ -345,11 +282,6 @@ def _window_len(kwargs: Dict[str, Any]) -> int:
 
 
 def run_one(spec: Dict[str, Any]) -> Dict[str, Any]:
-    """Execute one run described by ``spec`` and write its JSON record.
-
-    ``spec`` keys: ``scenario`` (Scenario fields), ``arm`` (name in ARMS),
-    ``seed``, ``episodes``, ``out`` (record path).
-    """
     os.environ.setdefault("OMP_NUM_THREADS", "1")
     import torch
 
@@ -395,9 +327,6 @@ def run_one(spec: Dict[str, Any]) -> Dict[str, Any]:
                                     allow_missing_obs=scenario.allow_missing_obs)
 
         def fit_config(cfg, env):
-            # Without a heat-pump action the indoor temperature is not the
-            # controller's to move: a comfort term would be a constant offset
-            # on the reward, computed from set points the dataset does not have.
             if env.hvac_action_index < 0:
                 cfg.reward.lambda_indoor = 0.0
             return cfg
@@ -424,10 +353,6 @@ def run_one(spec: Dict[str, Any]) -> Dict[str, Any]:
         if model_dir is not None:
             controller.load(str(model_dir))
         if getattr(controller, "fleet_shield", None) is not None:
-            # The cap shield forecasts the house load from its own history. The
-            # controller is built fresh for evaluation, so that history would be
-            # empty: one pass over the training window (the days just before the
-            # evaluation window) gives it what a deployed controller would have.
             log("warm-up: load forecast on the training window")
             warm_env = make_env(train_kw)
             warm = evaluate(controller, warm_env, config, _window_len(train_kw))

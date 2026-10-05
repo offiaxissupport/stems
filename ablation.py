@@ -1,18 +1,4 @@
 #!/usr/bin/env python3
-"""Ablation of the constraint-violation tricks on real CityLearn.
-
-The headline STEMS metric is the safety violation rate. On the Travis dataset
-this is dominated by the battery SOC bound, which the CBF shield enforces, so
-this ablation isolates the *shield's* contribution: the same seeded nominal
-policy is replayed through the real environment under different safety
-configurations, and we report each configuration's violation rate and cost.
-
-This cleanly separates the four tricks' marginal effects from RL training noise.
-(Full policy training / cost-vs-baseline comparison is via ``train.py``.)
-
-Usage:
-    .venv/Scripts/python ablation.py --steps 1000 --seeds 0 1 2
-"""
 
 from __future__ import annotations
 
@@ -34,8 +20,6 @@ def _full_safety() -> SafetyConfig:
                         robust_margins=True, soc_margin=0.03, power_derate=0.05)
 
 
-# (label, use_cbf, safety_cfg, miscalibrate). miscalibrate forces the old
-# global dSOC=0.1 instead of the real per-building rate.
 def _configs() -> List[tuple]:
     return [
         ("no_cbf (raw policy)",         False, None,                                                     False),
@@ -63,8 +47,6 @@ def rollout(env: STEMSEnvironment, use_cbf: bool, safety_cfg: Optional[SafetyCon
     for _ in range(steps):
         nominal = np.clip(rng.normal(0.3, 0.7, (env.num_buildings, env.action_dim)), -1, 1).astype(np.float32)
         actions = cbf.project(nominal, obs) if use_cbf else nominal
-        # Tariff of the hour being simulated: read before stepping (the returned
-        # observation already carries the next hour's price).
         price = np.array([o[_IDX_PRICE] for o in obs])
         obs, _, term, trunc, _ = env.step(actions)
         soc = np.array([o[_IDX_SOC] for o in obs])

@@ -100,7 +100,7 @@ broken → the simulator runs one hour → costs, comfort and violations are mea
 | 30 June | Device isolation: train on the heat pump (and hot water) only, battery frozen. | The basis of the heat-pump-only benchmark. |
 | 1–3 September | Hot-water action found dead in CityLearn (the first simulator bug we met). Pre-heating study. Thesis re-centred on housing + EVs. Built the housing-and-EV dataset. First cap sweep. Tried to compare centralised vs decentralised learning. | The comparison was impossible: **the agent was not learning at all**. Also: "a shield strong enough to guarantee the objective removes the learning signal for it" — the first sign of tonight's problem. |
 | 14–17 September | Built the clean experiment harness. Found that our code had wrong assumptions about the data (hour runs 1–24, forecasts are 6/12/24 h ahead, the sign of the heat-pump action selects heating or cooling). | Check every convention against the data files, never assume. |
-| 3 October | You asked to run the big grid "only when everything is correct, mathematically correct and explainable". We audited first, with four independent reviews. | Three simulator bugs, wrong timing in the measurements, wrong statistics, and the reason the agent never learned. All fixed before running anything. |
+| 3 October | The big grid was to run only once everything was verified as correct and explainable, so an audit came first: four separate reviews (measurement, safety layer, learner, statistics). | Three simulator bugs, wrong timing in the measurements, wrong statistics, and the reason the agent never learned. All fixed before running anything. |
 | 3–4 October | Grid 1: 80 runs, four seasons, safety layer × controller. | Section 6.1–6.2. |
 | 4 October | EV phase: exact car model, the joint shield, a four-stage study (468 runs), the literature search, the report. Then full controllers under a binding cap. | Section 6.3–6.5. The learner "leans on the shield". |
 | 4–5 October (now) | Branch pushed. Fixing the leaning. Re-running the heat-pump-only benchmark on the corrected simulator. | Section 5.10–5.11 and 7. |
@@ -109,7 +109,7 @@ broken → the simulator runs one hour → costs, comfort and violations are mea
 
 ## 5. The problems, and how we reasoned about each
 
-This is the part you asked for: not only what we did, but how we thought.
+Not only what was done, but the reasoning behind it.
 
 ### 5.1 "Is this even a real experiment?"
 
@@ -278,7 +278,7 @@ winter departures where the rule misses 5.
 - Shield: the later hours of the plan now carry the day-ahead error margin. A reserve of one hour is kept,
   and it now accounts for the 0.3% loss during that hour. These two settings were chosen on the **training**
   weeks only (0 missed of 66 with a controller that never asks; 4 without the margin; 2 without the reserve).
-  My first choice used the winter week alone and was wrong; I stopped that run after 15 minutes and redid it.
+  The first choice used the winter week alone and was wrong; that run was stopped after 15 minutes and redone.
 - Reward: the penalty for a car leaving short now uses what the car really left with.
 - Three ways to deal with the learner, running now as separate arms: leave it as it is (control); make it
   **pay** for every kWh the shield has to force; put a **floor** under its request (it may ask for more than
@@ -300,7 +300,7 @@ under 40 kW, whatever the controller).
 
 ### 5.11 Why the old heat-pump numbers are not valid, and what replaces them
 
-**The old result** (in `RECAP.md`, the one shared with Manal): the learned heat-pump controller cost 45% of
+**The old result** (the one shared with Manal): the learned heat-pump controller cost 45% of
 the rule's cost "at the same discomfort, 0.01%".
 
 **Why it cannot be trusted.** The first bug in the table of 5.2: the comfort metric and the comfort reward read
@@ -358,8 +358,8 @@ See 5.8. The one-sentence version: **joint planning is needed exactly when charg
 ### 6.5 Literature
 
 Eighteen ideas were taken from the search, seventeen have code behind them (table in the report, §7). The
-Consensus plugin was not connected, so the search used web sources; every cited paper was opened. The list
-should be re-checked through Consensus.
+search used web sources and each citation was checked against the paper's abstract or text. The papers
+should be re-read before they are cited.
 
 ---
 
@@ -391,7 +391,7 @@ When they finish: results into the report, merge, push.
 
 | Numbers | Status |
 |---|---|
-| `RECAP.md`, `stems_report.pdf`, every result before 3 October | **Not valid.** Superseded. |
+| `archive/stems_report.pdf`, every result before 3 October | **Not valid.** Superseded. |
 | The heat-pump benchmark shared with Manal (cost 0.448 × rule) | **Not valid** (5.11). Being re-run. |
 | Grid 1, residual grid, EV study, controller grid 1 | Valid on the corrected simulator. Limits below. |
 | Controller grids under the cap | Two seasons, two seeds: mechanisms are established, sizes are not. |
@@ -504,10 +504,10 @@ handles a binding cap is so far only wired for schemas with chargers).
 5. **Let the shield discharge batteries** when the house alone would exceed the cap.
 6. **More scenarios and seeds** for the controller grids, and a best-possible schedule computed with
    hindsight as a reference.
-7. **File the CityLearn bug report.** It is written; it needs your go-ahead because it is public.
-8. **Re-check the literature through Consensus** once it is connected.
+7. **File the CityLearn bug report.** It is written and has not been sent, because it is public.
+8. **Re-read the cited papers** before citing them.
 
-Decisions that are yours: filing the bug report; what to say to Manal and when; whether the next block of
+Open decisions: filing the bug report; what to say to Manal and when; whether the next block of
 work is the hot-water deadline (for her) or the stronger EV evidence (for the thesis claim).
 
 ---

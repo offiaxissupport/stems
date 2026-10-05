@@ -1,23 +1,4 @@
 #!/usr/bin/env python3
-"""Create a real 8-building CityLearn Travis County schema for STEMS.
-
-CityLearn v2.6 ships ``tx_travis_county_neighborhood`` with 100 real
-ResStock buildings.  The paper evaluates a representative 8-building subset,
-whereas the 2023 challenge local/online schemas expose only 3 buildings.  This
-script creates a local schema that selects 8 real Travis buildings, activates
-the observations used by STEMS, and attaches CityLearn pricing/carbon files so
-cost and emission metrics are non-zero.
-
-Usage:
-    python -B setup_citylearn_8b.py --validate
-
-By default the selected buildings all expose the same 3-action profile:
-``dhw_storage``, ``electrical_storage``, and ``cooling_or_heating_device``.
-
-Then run:
-    python train.py --paper-reproduction
-    python evaluate.py --paper-reproduction
-"""
 
 from __future__ import annotations
 

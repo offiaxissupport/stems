@@ -1,12 +1,3 @@
-"""The learner must learn: a known-answer bandit through the production update().
-
-Reward r_b = -4 (a_hvac - 0.6)^2 - 4 (a_batt + 0.3)^2 has its optimum at
-(0.6, -0.3) whatever the state. Before the entropy-temperature fix the
-deterministic action plateaued near 0.27 on this problem; a learner that cannot
-leave its initialisation fails here, not three hours into a grid. Mock
-environment (synthetic): only the action matters to this reward.
-"""
-
 from __future__ import annotations
 
 import os
@@ -72,10 +63,9 @@ def test_first_episode_only_fits_the_normaliser():
 
 
 def test_first_minibatch_ratio_is_one():
-    """The recorded behaviour log-prob must equal the policy's own at update time."""
     agent, env, cfg = _agent_and_env()
     cfg.training.update_epochs, cfg.training.minibatch_size = 1, 10_000
-    for expected_steps in (0, 1):                      # warm-up, then one real step
+    for expected_steps in (0, 1):
         buf = EpisodeBuffer()
         _episode(agent, env, cfg, explore=True, buf=buf)
         stats = agent.update(buf.get_batch())

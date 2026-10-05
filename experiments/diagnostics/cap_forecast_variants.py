@@ -1,12 +1,3 @@
-"""Cap exceedance of an arm on the EV schema under forecast variants, with the
-warm-up pass the runner does (report, 6.7).
-
-    .venv/Scripts/python experiments/diagnostics/cap_forecast_variants.py rbc+calibrated winter 7 40 7
-    ... rbc+calibrated winter 7 40 0 nohouse      # the shield without the house storage
-
-The 20.0 kWh figure of the report is the same week on the code before the cap
-shield (commit 2a08bfb), without the warm-up.
-"""
 import os
 import sys
 

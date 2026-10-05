@@ -1,18 +1,3 @@
-"""Validate the EV deadline barrier against real CityLearn EV data.
-
-Run:  .venv/Scripts/python -m pytest tests/test_ev_real.py -q
-
-``STEMSEnvironment`` is currently pinned to the tx_travis_8b observation subset,
-which has no chargers, so these tests drive the raw CityLearn EV dataset
-directly. That is deliberate: the point is to prove the barrier's calibration
-against the actual simulator before the wrapper is widened, exactly as the
-hot-water calibration was checked against the real tank.
-
-Dataset: ``citylearn_challenge_2022_phase_all_plus_evs`` (17 buildings, one
-charger per building, actions ``[electrical_storage,
-electric_vehicle_storage_charger_<id>, washing_machine_<id>]``).
-"""
-
 from __future__ import annotations
 
 import numpy as np
@@ -28,7 +13,7 @@ def ev_env():
     try:
         from citylearn.citylearn import CityLearnEnv
         env = CityLearnEnv(DATASET, central_agent=False)
-    except Exception as exc:                                    # pragma: no cover
+    except Exception as exc:
         pytest.skip(f"CityLearn EV dataset unavailable: {exc!r}")
     env.reset()
     return env
@@ -61,7 +46,6 @@ def _layout_and_spec(env, building_index: int = 0):
 
 
 def test_ev_observations_are_all_present(ev_env):
-    """Deadline, requirement, state and capacity must all be observable."""
     layout, _, _ = _layout_and_spec(ev_env)
     for field in ("connected_state", "departure_time", "required_soc_departure",
                   "soc", "battery_capacity"):
@@ -69,26 +53,17 @@ def test_ev_observations_are_all_present(ev_env):
 
 
 def test_ev_charge_rate_matches_the_real_charger(ev_env):
-    """rho = P_charge * eta / C_battery, read from the plant, not assumed."""
     layout, spec, charger = _layout_and_spec(ev_env)
     barrier = EVReadinessBarrier(layout, spec)
     obs, _ = ev_env.reset()
     rate = barrier.current_rate([obs[0]])[0]
     capacity = barrier.current_capacity([obs[0]])[0]
     nameplate = float(charger.max_charging_power) * float(charger.efficiency) / capacity
-    # Deliberately derated: see EVReadinessBarrier._rate_derate. A latest-start
-    # trigger must not be fed an optimistic rate.
     assert rate == pytest.approx(barrier._rate_derate * nameplate, rel=1e-4)
     assert rate < nameplate
 
 
 def test_ev_lead_time_far_exceeds_the_hot_water_tank(ev_env):
-    """An EV needs hours, not minutes -- the deadline barrier matters more here.
-
-    The DHW tank fills in 1.2-1.9 h; a car on a domestic charger needs several
-    times that, so the horizon rule that mattered marginally for hot water is
-    decisive for vehicles.
-    """
     layout, spec, _ = _layout_and_spec(ev_env)
     barrier = EVReadinessBarrier(layout, spec)
     obs, _ = ev_env.reset()
@@ -97,7 +72,6 @@ def test_ev_lead_time_far_exceeds_the_hot_water_tank(ev_env):
 
 
 def test_ev_barrier_runs_over_a_real_rollout(ev_env):
-    """Barrier stays well-defined across arrivals, departures and empty bays."""
     layout, spec, _ = _layout_and_spec(ev_env)
     barrier = EVReadinessBarrier(layout, spec)
     obs, _ = ev_env.reset()
@@ -115,7 +89,6 @@ def test_ev_barrier_runs_over_a_real_rollout(ev_env):
         safe = barrier.project(np.zeros((1, action_dim), np.float32), o)
         assert np.all(np.isfinite(safe))
         assert -1.0 <= safe[0, spec.action_index] <= 1.0
-        # An empty bay must never be commanded to charge.
         if not rep["active"][0]:
             assert safe[0, spec.action_index] == pytest.approx(0.0)
 
@@ -130,7 +103,6 @@ def test_ev_barrier_runs_over_a_real_rollout(ev_env):
 
 
 def test_ev_barrier_commands_charge_when_the_deadline_closes(ev_env):
-    """With the departure near and the battery short, the barrier must act."""
     layout, spec, _ = _layout_and_spec(ev_env)
     barrier = EVReadinessBarrier(layout, spec)
     obs, _ = ev_env.reset()
@@ -139,7 +111,7 @@ def test_ev_barrier_commands_charge_when_the_deadline_closes(ev_env):
     o[layout.battery_capacity] = 60.0
     o[layout.soc] = 0.2
     o[layout.required_soc_departure] = 0.9
-    o[layout.departure_time] = 1.0        # one step left, ~4 steps of charge needed
+    o[layout.departure_time] = 1.0
     safe = barrier.project(np.zeros((1, len(o)), np.float32), [o])
     assert safe[0, spec.action_index] > 0.9
     assert barrier.deadline_report([o])["at_risk"][0], "unreachable deadline must be flagged"

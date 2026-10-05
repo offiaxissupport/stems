@@ -1,14 +1,3 @@
-"""Why the earlier heat-pump-only numbers were not valid, in one table.
-
-CityLearn >= 2.4 reports as ``indoor_dry_bulb_temperature`` the dataset's
-uncontrolled temperature, not the one it simulates. A comfort KPI (or a comfort
-reward) computed from that observation cannot see what the heat pump does. Here
-the heat pump is simply switched off for a winter evaluation window and the same
-KPI code is run on the simulator as shipped and on the patched one; the
-thermostat on the patched simulator is the reference.
-
-    .venv/Scripts/python experiments/diagnostics/blind_comfort.py [season] [days]
-"""
 import os
 import sys
 from pathlib import Path
@@ -19,10 +8,10 @@ REPO = Path(__file__).resolve().parents[2]
 os.chdir(REPO)
 sys.path.insert(0, str(REPO))
 
-from experiments.controllers import IdlePolicy, PlainController     # noqa: E402
-from experiments.runner import _window_len, evaluate, make_config   # noqa: E402
-from experiments.scenario import Scenario                           # noqa: E402
-from stems.environment import STEMSEnvironment                      # noqa: E402
+from experiments.controllers import IdlePolicy, PlainController
+from experiments.runner import _window_len, evaluate, make_config
+from experiments.scenario import Scenario
+from stems.environment import STEMSEnvironment
 
 season = sys.argv[1] if len(sys.argv) > 1 else "winter"
 days = int(sys.argv[2]) if len(sys.argv) > 2 else 28
@@ -37,7 +26,6 @@ for label, control, patched in (("heat pump off", "power", False),
     ctrl = PlainController(IdlePolicy(env.num_buildings, env.action_dim))
     k = evaluate(ctrl, env, make_config(sc), _window_len(kw))["kpis"]
     b = env._env.buildings
-    # The simulator exposes its series for the current episode (the window).
     es = [x.energy_simulation for x in b]
     n = _window_len(kw) - 1
     simulated = np.array([np.asarray(x.indoor_dry_bulb_temperature)[:n] for x in es])

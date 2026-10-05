@@ -1,11 +1,3 @@
-"""Does the current code reproduce stored runs of the EV study? (report, 9)
-
-    .venv/Scripts/python experiments/diagnostics/replay_stored_runs.py
-
-The cap-shield changes are meant to leave the shield untouched when no house
-storage is attached; this replays stored configurations and compares every
-number the study recorded.
-"""
 import json
 import os
 import sys
