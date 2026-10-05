@@ -1,7 +1,7 @@
 """How does a trained arm charge the cars? Requested vs executed charging, by hour of
 day, from a replay of the evaluation with the saved policy (report, 6.7).
 
-    .venv/Scripts/python experiments/diagnostics/ev_rl_requests.py rl+calibrated winter 0
+    .venv/Scripts/python experiments/diagnostics/ev_rl_requests.py rl+calibrated winter 0 [results/ev_rl_v1]
 """
 import os
 import sys
@@ -20,6 +20,7 @@ from stems.utils import HistoryBuffer, set_seed
 
 EV = "citylearn_schemas/tx_travis_8b_ev/schema.json"
 arm_name, season, seed = sys.argv[1], sys.argv[2], int(sys.argv[3])
+root = Path(sys.argv[4]) if len(sys.argv) > 4 else Path("results/ev_rl_v1")
 sc = Scenario(schema=EV, season=season, days=14, grid_cap_kw=40.0)
 set_seed(seed)
 learner = {"share_parameters": True}
@@ -35,7 +36,7 @@ config = make_config(sc, learner)
 arm = ARMS[arm_name]
 ctrl = build_controller(arm, env, config)
 if arm.learns:
-    ctrl.load(str(Path("results/ev_rl_v1") / sc.key / f"{arm_name}__seed{seed}_model"))
+    ctrl.load(str(root / sc.key / f"{arm_name}__seed{seed}_model"))
 fs = ctrl.fleet_shield
 e = env.ev_action_indices()[0]
 layout = env.ev_obs_layout()[0]
