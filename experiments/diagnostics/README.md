@@ -11,3 +11,5 @@ code fingerprint (`stems/*.py`, `experiments/*.py`).
 | `ev_rl_requests.py` | 6.7: what each trained arm asks of the chargers against what is executed (needs the saved models, which are not in git) |
 | `replay_stored_runs.py` | 9: stored EV-study runs replayed on the current code |
 | `observation_timing.py` | which hour the load, solar and hot-water demand observations describe |
+| `replay_saved_policy.py` | 6.8: a policy saved by one grid, evaluated under the shield of the current code |
+| `blind_comfort.py` | 5 (heat pump): the comfort KPI on the simulator as shipped and on the patched one, heat pump switched off |
