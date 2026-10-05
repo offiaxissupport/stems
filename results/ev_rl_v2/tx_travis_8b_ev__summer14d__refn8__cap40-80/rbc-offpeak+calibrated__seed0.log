@@ -1,0 +1,3 @@
+23:55:16 evaluate
+23:55:43 warm-up: load forecast on the training window
+23:57:40 done verified=True violation=0.0119 cost=1212.1

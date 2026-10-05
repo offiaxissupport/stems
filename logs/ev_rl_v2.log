@@ -1,0 +1,980 @@
+[ablation] 18 runs in grid, 18 to do, workers=8
+[ablation] 1/18 ok    verified=True    108.9s  C:\temp\stems-fix\results\ev_rl_v2\tx_travis_8b_ev__winter14d__refn8__cap40-80\rbc+calibrated__seed0.json
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+[ablation] 2/18 ok    verified=True    118.7s  C:\temp\stems-fix\results\ev_rl_v2\tx_travis_8b_ev__winter14d__refn8__cap40-80\rbc-offpeak+calibrated__seed0.json
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+[ablation] 3/18 ok    verified=True    128.7s  C:\temp\stems-fix\results\ev_rl_v2\tx_travis_8b_ev__winter14d__refn8__cap40-80\rbc-never+calibrated__seed0.json
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+[ablation] 4/18 ok    verified=True    151.1s  C:\temp\stems-fix\results\ev_rl_v2\tx_travis_8b_ev__summer14d__refn8__cap40-80\rbc+calibrated__seed0.json
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+[ablation] 5/18 ok    verified=True    144.4s  C:\temp\stems-fix\results\ev_rl_v2\tx_travis_8b_ev__summer14d__refn8__cap40-80\rbc-offpeak+calibrated__seed0.json
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+[ablation] 6/18 ok    verified=True    136.7s  C:\temp\stems-fix\results\ev_rl_v2\tx_travis_8b_ev__summer14d__refn8__cap40-80\rbc-never+calibrated__seed0.json
+[ablation] 7/18 ok    verified=True   4055.5s  C:\temp\stems-fix\results\ev_rl_v2\tx_travis_8b_ev__winter14d__refn8__cap40-80\rl+calibrated+floor__seed0.json
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+[ablation] 8/18 ok    verified=True   4118.1s  C:\temp\stems-fix\results\ev_rl_v2\tx_travis_8b_ev__winter14d__refn8__cap40-80\rl+calibrated__seed1.json
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+[ablation] 9/18 ok    verified=True   4138.2s  C:\temp\stems-fix\results\ev_rl_v2\tx_travis_8b_ev__winter14d__refn8__cap40-80\rl+calibrated__seed0.json
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+[ablation] 10/18 ok    verified=None   4138.7s  C:\temp\stems-fix\results\ev_rl_v2\tx_travis_8b_ev__winter14d__refn8__cap40-80\rl+calibrated+own__seed0.json
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+[ablation] 11/18 ok    verified=True   4142.7s  C:\temp\stems-fix\results\ev_rl_v2\tx_travis_8b_ev__winter14d__refn8__cap40-80\rl+calibrated+own__seed1.json
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+[ablation] 12/18 ok    verified=True   4109.1s  C:\temp\stems-fix\results\ev_rl_v2\tx_travis_8b_ev__winter14d__refn8__cap40-80\rl+calibrated+floor__seed1.json
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+[ablation] 13/18 ok    verified=None   3993.0s  C:\temp\stems-fix\results\ev_rl_v2\tx_travis_8b_ev__summer14d__refn8__cap40-80\rl+calibrated__seed0.json
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+[ablation] 14/18 ok    verified=None   3961.2s  C:\temp\stems-fix\results\ev_rl_v2\tx_travis_8b_ev__summer14d__refn8__cap40-80\rl+calibrated__seed1.json
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+[ablation] 15/18 ok    verified=True   3261.2s  C:\temp\stems-fix\results\ev_rl_v2\tx_travis_8b_ev__summer14d__refn8__cap40-80\rl+calibrated+floor__seed0.json
+[ablation] 16/18 ok    verified=True   3295.2s  C:\temp\stems-fix\results\ev_rl_v2\tx_travis_8b_ev__summer14d__refn8__cap40-80\rl+calibrated+floor__seed1.json
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+[ablation] 17/18 ok    verified=True   3386.3s  C:\temp\stems-fix\results\ev_rl_v2\tx_travis_8b_ev__summer14d__refn8__cap40-80\rl+calibrated+own__seed0.json
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'dhw_storage_capacity' on 8/8 buildings.
+        Building.update_dhw_storage scales the action by heating_storage.capacity
+        (= 0.0 in this schema), making the DHW action a no-op. Now uses dhw_storage.capacity.
+        Disable with STEMSEnvironment(patch_dhw=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 't0_thermal_double_count' on 8/8 buildings.
+        reset() books the ideal thermal load at t=0, then the first step
+        limits devices to nominal power minus that same load (asserts on
+        heating, silently clips storage charging). Cleared before step 1.
+        Disable with STEMSEnvironment(patch_t0_double_count=False).
+==========================================================================
+==========================================================================
+[STEMS] PATCHED CityLearn defect 'endogenous_obs_from_simulated_hour'.
+        The indoor temperature observation reads the uncontrolled dataset
+        value, never the simulated one. State observations now come from
+        the simulator's series for the hour the action was applied to.
+        Disable with STEMSEnvironment(patch_endogenous_obs=False).
+==========================================================================
+[ablation] 18/18 ok    verified=None   3381.0s  C:\temp\stems-fix\results\ev_rl_v2\tx_travis_8b_ev__summer14d__refn8__cap40-80\rl+calibrated+own__seed1.json
+[ablation] finished in 125.5 min

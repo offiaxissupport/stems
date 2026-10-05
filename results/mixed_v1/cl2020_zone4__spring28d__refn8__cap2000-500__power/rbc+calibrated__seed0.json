@@ -1,0 +1,226 @@
+{
+  "meta": {
+    "scenario": {
+      "schema": "citylearn_schemas/cl2020_zone4/schema.json",
+      "season": "spring",
+      "subset_seed": null,
+      "n_buildings": 8,
+      "days": 28,
+      "grid_cap_kw": 2000.0,
+      "building_cap_kw": 500.0,
+      "hvac_control": "power",
+      "heat_pump": false,
+      "allow_missing_obs": true,
+      "key": "cl2020_zone4__spring28d__refn8__cap2000-500__power",
+      "buildings": [
+        "Building_1",
+        "Building_2",
+        "Building_3",
+        "Building_4",
+        "Building_5",
+        "Building_6",
+        "Building_7",
+        "Building_8",
+        "Building_9"
+      ],
+      "train_window": [
+        2160,
+        2831
+      ],
+      "eval_window": [
+        2832,
+        3503
+      ]
+    },
+    "arm": {
+      "name": "rbc+calibrated",
+      "policy": "rbc",
+      "barrier": "calibrated",
+      "residual": false,
+      "penalty": 0.0,
+      "ev_request": "asap",
+      "forced_penalty": 0.0,
+      "ev_floor": 0.0,
+      "control": null
+    },
+    "seed": 0,
+    "episodes": 0,
+    "learner": {},
+    "code": {
+      "git": "29eae34",
+      "fingerprint": "1d12c79fb4320fb8",
+      "files": 28,
+      "citylearn": "2.6.0b1"
+    },
+    "started": "2026-10-05 01:35:46",
+    "eval_calibration": {
+      "soc_rate": [
+        0.7142857313156128,
+        0.5,
+        0.4000000059604645,
+        0.4000000059604645,
+        0.5,
+        0.3333333432674408,
+        0.375,
+        0.3333333432674408,
+        0.5714285969734192
+      ],
+      "dhw_capacity_kwh": [
+        16.579999923706055,
+        76.83000183105469,
+        1.0,
+        1.0,
+        42.65999984741211,
+        96.12000274658203,
+        65.5199966430664,
+        95.76000213623047,
+        100.44000244140625
+      ]
+    },
+    "citylearn_patches": [
+      "dhw_storage_capacity",
+      "t0_thermal_double_count",
+      "endogenous_obs_from_simulated_hour"
+    ],
+    "absent_observations": [
+      "occupant_count",
+      "indoor_dry_bulb_temperature_cooling_set_point"
+    ],
+    "buildings_simulated": [
+      "Building_1",
+      "Building_2",
+      "Building_3",
+      "Building_4",
+      "Building_5",
+      "Building_6",
+      "Building_7",
+      "Building_8",
+      "Building_9"
+    ],
+    "config": {
+      "cbf": {
+        "SOC_min": 0.1,
+        "SOC_max": 0.9,
+        "P_grid_max": 2000.0,
+        "P_building_max": 500.0,
+        "gamma_cbf": 1.0
+      },
+      "safety": {
+        "feasibility_qp": true,
+        "anticipatory": false,
+        "invariance_horizon": 1,
+        "robust_margins": false,
+        "soc_margin": 0.03,
+        "soc_tolerance": 0.001,
+        "power_derate": 0.05
+      },
+      "thermal": {
+        "dhw_readiness": true,
+        "preheat_horizon": 2,
+        "dhw_margin": 0.05,
+        "dhw_soc_cap": 0.95,
+        "forecast_alpha": 0.2,
+        "forecast_warmup": 24,
+        "forecast_temp_gain": 0.02,
+        "weather_anticipation": true,
+        "weather_gain": 0.15,
+        "weather_horizon": 3,
+        "cop_aware_power": true
+      },
+      "training": {
+        "episodes": 50,
+        "batch_size": 512,
+        "buffer_capacity": 100000,
+        "exploration_noise": 0.1,
+        "action_scale": 1.0,
+        "update_epochs": 10,
+        "minibatch_size": 64,
+        "ppo_clip": 0.2,
+        "gae_lambda": 0.95,
+        "value_coef": 0.5,
+        "max_grad_norm": 0.5,
+        "target_kl": 0.02,
+        "entropy_coef": 0.01,
+        "scale_rewards": true,
+        "actor_target": "raw",
+        "residual_scale": 0.5,
+        "residual_log_std": -1.2,
+        "intervention_penalty": 0.0,
+        "forced_charge_penalty": 0.0
+      },
+      "lagrangian": {
+        "num_constraints": 3,
+        "cost_limit": 0.05,
+        "lambda_init": 0.1,
+        "lambda_max": 10.0,
+        "lambda_lr": 0.005,
+        "use_pid": true,
+        "pid_kp": 1.0,
+        "pid_ki": 0.3,
+        "pid_kd": 0.0
+      },
+      "reward": {
+        "mu": 1.0,
+        "alpha_grid": 0.5,
+        "alpha_build": 0.3,
+        "beta_ramp": 0.2,
+        "lambda_indoor": 0.0,
+        "xi": 0.0,
+        "T_ref": 22.0,
+        "T_comfort_threshold": 2.0,
+        "ev_service": 25.0,
+        "ev_shaping": 0.5
+      },
+      "actor_critic": {
+        "hidden_dim": 128,
+        "lr": 0.0003,
+        "gamma": 0.99,
+        "share_parameters": true
+      }
+    }
+  },
+  "status": "ok",
+  "eval": {
+    "cost": 19927.359375,
+    "emission": 41481.40625,
+    "avg_daily_peak": 357.7338191441127,
+    "electricity_consumption": 81875.765625,
+    "ramping_rate": 40.83208465576172,
+    "discomfort_rate": 0.0,
+    "safety_violation_rate": 0.0,
+    "soc_violation_rate": 0.0,
+    "power_violation_rate": 0.0,
+    "grid_violation_rate": 0.0,
+    "avoidable_violation_rate": 0.0,
+    "unavoidable_violation_rate": 0.0,
+    "peak_import_kw": 465.2425231933594,
+    "load_factor": 0.2622729208077603,
+    "cap_exceedance_kwh": 0.0,
+    "pv_self_consumption": 0.8163886047933273,
+    "self_sufficiency": 0.21452465245289365,
+    "discomfort_degree_hours": 0.0,
+    "battery_equivalent_full_cycles": 19.404645919799805,
+    "barrier_intervention_rate": 0.1942374565325385,
+    "barrier_intervention_magnitude": 0.05030764266848564,
+    "cost_cv_across_buildings": 0.41831363949312195,
+    "discomfort_rate_worst_building": 0.0
+  },
+  "actuators": {
+    "verified": true,
+    "battery": {
+      "n_charge": 917,
+      "n_rest": 5020,
+      "contrast": 0.22166839241981506,
+      "responds": true
+    },
+    "dhw": {
+      "n_charge": 752,
+      "n_rest": 4527,
+      "contrast": 0.12717224657535553,
+      "responds": true
+    },
+    "hvac": null
+  },
+  "eval_steps": 671,
+  "seconds": 48.1
+}
