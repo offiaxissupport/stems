@@ -50,8 +50,19 @@ def day_window(first_day: int, days: int) -> Tuple[int, int]:
     return start, start + days * 24 - 1
 
 
+# The protocol of the STEMS paper (Zhang et al. 2025, Table I): train on the 8760
+# hours of the year, then evaluate the converged policy on the same twelve months.
+# The evaluation is in-sample by construction; the season windows above are not.
+YEAR = "year"
+YEAR_STEPS = 8760
+SEASONS = sorted(SEASON_FIRST_DAY) + [YEAR]
+
+
 def season_windows(season: str, days: int = 28) -> Tuple[Tuple[int, int], Tuple[int, int]]:
-    """(training window, evaluation window): consecutive and non-overlapping."""
+    """(training window, evaluation window): consecutive and non-overlapping, except
+    for ``"year"``, where both are the whole year (the STEMS paper's protocol)."""
+    if season == YEAR:
+        return (0, YEAR_STEPS - 1), (0, YEAR_STEPS - 1)
     if season not in SEASON_FIRST_DAY:
         raise ValueError(f"unknown season {season!r}; choose from {sorted(SEASON_FIRST_DAY)}")
     first = SEASON_FIRST_DAY[season]
@@ -207,7 +218,8 @@ class Scenario:
     @property
     def key(self) -> str:
         subset = "ref" if self.subset_seed is None else f"subset{self.subset_seed}"
-        key = (f"{_resolve(self.schema).parent.name}__{self.season}{self.days}d"
+        span = "year-insample" if self.season == YEAR else f"{self.season}{self.days}d"
+        key = (f"{_resolve(self.schema).parent.name}__{span}"
                f"__{subset}n{self.n_buildings}"
                f"__cap{self.grid_cap_kw:g}-{self.building_cap_kw:g}")
         return key if self.hvac_control == "setpoint" else f"{key}__{self.hvac_control}"

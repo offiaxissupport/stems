@@ -57,7 +57,7 @@ if str(REPO) not in sys.path:
 
 from experiments.controllers import ARMS  # noqa: E402
 from experiments.runner import code_fingerprint, run_one  # noqa: E402
-from experiments.scenario import SEASON_FIRST_DAY, TX_SCHEMA, Scenario  # noqa: E402
+from experiments.scenario import SEASONS, TX_SCHEMA, Scenario  # noqa: E402
 
 
 def build_grid(args) -> List[Dict[str, Any]]:
@@ -104,7 +104,7 @@ def already_done(spec: Dict[str, Any], fingerprint: str) -> bool:
 def main() -> None:
     ap = argparse.ArgumentParser(description="Policy vs safety-layer ablation grid")
     ap.add_argument("--seasons", nargs="+", default=["winter", "summer"],
-                    choices=sorted(SEASON_FIRST_DAY))
+                    choices=SEASONS)
     ap.add_argument("--subsets", nargs="+", default=["ref", "1", "2"],
                     help="'ref' = the schema's own buildings; integers = sampled subsets")
     ap.add_argument("--arms", nargs="+", default=list(ARMS), choices=list(ARMS))

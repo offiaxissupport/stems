@@ -25,6 +25,10 @@ the default scenario never bind, so they are not what these arms differ in)
     ``basic``       the barrier as originally implemented: a linear battery model
                     with one uniform rate (0.1 state of charge per unit action) for
                     every building.
+    ``linear``      the barrier of the STEMS paper (its Eq. 16): each battery's own
+                    capacity and power, but the lossless update
+                    ``SOC' = SOC + a * dt / capacity`` -- no efficiency, no power
+                    taper, no standby loss.
     ``calibrated``  the same barrier inverting the simulator's own battery
                     equations per building (``stems.battery.BatteryModel``).
 
@@ -88,6 +92,7 @@ ARMS: Dict[str, Arm] = {a.name: a for a in (
     Arm("rbc+calibrated", "rbc", "calibrated"),
     Arm("rl", "rl", "none"),
     Arm("rl+basic", "rl", "basic"),
+    Arm("rl+linear", "rl", "linear"),
     Arm("rl+calibrated", "rl", "calibrated"),
     Arm("rl-res+calibrated", "rl", "calibrated", residual=True),
     Arm("rl+calibrated+pen", "rl", "calibrated", penalty=1.0),
@@ -291,6 +296,9 @@ def safety_layer(barrier: str, env):
         return plain, None
     if barrier == "basic":
         return plain, BatteryModel.linear(np.full(env.num_buildings, UNCALIBRATED_SOC_RATE))
+    if barrier == "linear":
+        exact = env.battery_model()
+        return plain, BatteryModel.linear(exact.nominal_power * exact.dt / exact.capacity)
     if barrier == "calibrated":
         return plain, env.battery_model()
     raise ValueError(f"unknown barrier {barrier!r}")

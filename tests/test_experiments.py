@@ -45,6 +45,26 @@ def test_evaluation_window_follows_training_window_without_overlap(season):
     assert 0 <= t0 and e1 <= 8759
 
 
+def test_year_scenario_is_the_whole_year_in_sample():
+    """The STEMS paper's protocol: train on the year, evaluate on the same year."""
+    train, evaluation = season_windows("year")
+    assert train == evaluation == (0, 8759)
+    sc = Scenario(season="year")
+    assert sc.env_kwargs("train") == sc.env_kwargs("eval") == {"episode_time_steps": [(0, 8759)]}
+    assert "year-insample" in sc.key
+
+
+def test_paper_barrier_is_lossless_and_per_battery(mock_env):
+    """The STEMS barrier knows each battery's size but not its losses."""
+    from experiments.controllers import safety_layer
+
+    _, linear = safety_layer("linear", mock_env)
+    exact = mock_env.battery_model()
+    np.testing.assert_allclose(linear.nominal_power / linear.capacity,
+                               exact.nominal_power * exact.dt / exact.capacity)
+    assert np.all(linear.loss == 0.0)
+
+
 def test_unknown_season_fails_loud():
     with pytest.raises(ValueError):
         season_windows("monsoon")
@@ -154,6 +174,7 @@ def test_the_ablation_arms():
         "rbc+calibrated": ("rbc", "calibrated"),
         "rl": ("rl", "none"),
         "rl+basic": ("rl", "basic"),
+        "rl+linear": ("rl", "linear"),
         "rl+calibrated": ("rl", "calibrated"),
         "rl-res+calibrated": ("rl", "calibrated"),
         "rl+calibrated+pen": ("rl", "calibrated"),
@@ -165,7 +186,7 @@ def test_the_ablation_arms():
         "rl-hp": ("rl", "none"),
     }
     assert [n for n, a in ARMS.items() if a.learns] == [
-        "rl", "rl+basic", "rl+calibrated", "rl-res+calibrated", "rl+calibrated+pen",
+        "rl", "rl+basic", "rl+linear", "rl+calibrated", "rl-res+calibrated", "rl+calibrated+pen",
         "rl+calibrated+own", "rl+calibrated+floor", "rl-hp"]
     assert ARMS["rl-res+calibrated"].residual and ARMS["rl+calibrated+pen"].penalty > 0
     assert ARMS["rl+calibrated+own"].forced_penalty > 0 and ARMS["rl+calibrated"].forced_penalty == 0
