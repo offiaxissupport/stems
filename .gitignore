@@ -35,3 +35,4 @@ stems_*.toc
 # Run logs and local tool settings
 logs/
 .claude/
+run_logs/
